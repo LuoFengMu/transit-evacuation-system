@@ -174,8 +174,13 @@ def render_map(
             hovertemplate="<b>%{text}</b><extra></extra>",
         ))
 
-    # ── 8. Bus routes — blue dashed, per-vehicle ──────────────
+    # ── 8. Bus routes — per-vehicle (OSMnx blue or SUMO purple) ──
     if bus_routes:
+        # Detect SUMO trajectories (no 'n_stops' key → from SUMO)
+        is_sumo = all("n_stops" not in br for br in bus_routes)
+        route_color = "#8e44ad" if is_sumo else "#2980b9"
+        route_label = "SUMO 公交轨迹" if is_sumo else "公交行驶路线"
+
         shown = 0
         for br in bus_routes:
             if shown >= 30:
@@ -187,13 +192,17 @@ def render_map(
             lats = [c[1] for c in coords]
             vid = br.get("vehicle_id", "")
             n_stops = br.get("n_stops", 0)
+            hover_text = f"<b>{vid}</b>"
+            if is_sumo:
+                hover_text += f"<br>出发: {br.get('depart', 0):.0f}s<br>到达: {br.get('arrival', 0):.0f}s"
+            else:
+                hover_text += f"<br>停靠: {n_stops} 个需求点"
             fig.add_trace(go.Scattermapbox(
                 lon=lons, lat=lats,
-                mode="lines+markers",
-                line=dict(width=3, color="#2980b9"),
-                marker=dict(size=5, color="#2980b9"),
-                name="公交行驶路线",
-                text=f"<b>{vid}</b><br>停靠: {n_stops} 个需求点",
+                mode="lines",
+                line=dict(width=4, color=route_color),
+                name=route_label,
+                text=hover_text,
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=(shown == 0),
             ))

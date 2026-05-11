@@ -59,9 +59,9 @@ scenario = load_scenario(SCENARIO_PATH)
 st.sidebar.header("突发事件")
 event_type = st.sidebar.selectbox(
     "事件类型",
-    options=["flood", "earthquake", "fire", "accident", "crowd"],
+    options=["flood", "fire", "accident", "crowd"],
     index=0,
-    format_func=lambda x: {"flood": "暴雨", "earthquake": "地震", "fire": "火灾",
+    format_func=lambda x: {"flood": "暴雨", "fire": "火灾",
                            "accident": "事故", "crowd": "大客流"}.get(x, x),
 )
 radius_m = st.sidebar.slider("影响半径 (m)", 200, 5000, 1500, step=100)
@@ -78,6 +78,9 @@ if enable_bus:
 else:
     bus_params = None
 
+enable_sumo = st.sidebar.checkbox("启用 SUMO 仿真", value=False,
+    help="勾选后运行 SUMO 动态交通仿真（需要已下载 SUMO 路网）")
+
 run_btn = st.sidebar.button("运行分析", type="primary", use_container_width=True)
 
 
@@ -87,20 +90,27 @@ st.caption("v0.2.0 — 路网加载 · 事件模拟 · 公交调度优化 · 简
 
 if not run_btn:
     st.info("请在侧边栏配置场景参数，然后点击「运行分析」")
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("场景", scenario.get("scenario_name", ""))
-    col_b.metric("事件类型", event_type)
-    col_c.metric("公交调度", "启用" if enable_bus else "关闭")
+
+    evt_label = {"flood":"暴雨","fire":"火灾","accident":"事故","crowd":"大客流"}.get(event_type, event_type)
+    st.markdown(f"**场景**: {scenario.get('scenario_name', '')}　|　**事件**: {evt_label}，半径 {radius_m}m　|　**公交**: {'启用' if enable_bus else '关闭'}")
+    if enable_bus and bus_params:
+        st.markdown(f"**运力**: {bus_params['n_buses']}辆 × {bus_params['bus_capacity']}人 = {bus_params['n_buses'] * bus_params['bus_capacity']}人")
+    if enable_sumo:
+        st.caption("SUMO 仿真将在调度完成后自动运行")
     st.stop()
 
 
 # ═══════════════════════════════════════════════════════════════
 # ── Run analysis ──────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
+log_lines: list[str] = []
+
+def _log(msg: str):
+    log_lines.append(msg)
 
 with st.spinner("加载路网数据..."):
     G, nodes_gdf, edges_gdf = load_network(GRAPHML_PATH)
-    st.success(f"路网加载完成：{G.number_of_nodes():,} 节点, {G.number_of_edges():,} 边")
+    _log(f"路网加载完成：{G.number_of_nodes():,} 节点, {G.number_of_edges():,} 边")
 
 with st.spinner("加载疏散需求点和避难点..."):
     demand_gdf = load_demand_points(DEMAND_PATH)
@@ -120,11 +130,9 @@ with st.spinner("解析突发事件..."):
     demand_summary = summarize_demand(demand_gdf)
     shelter_summary = summarize_shelters(shelters_gdf)
 
-    st.success(
-        f"事件: {event.event_type} | 中心: 彭城广场 | 危险半径: {event.radius_m}m\n\n"
-        f"需求点: {len(demand_gdf)} 个 ({demand_summary['total_people']:,} 人)\n\n"
-        f"可用避难点: {len(shelters_gdf)}/{len(shelters_all)} 个"
-    )
+    _log(f"事件: {event.event_type} | 中心: 彭城广场 | 危险半径: {event.radius_m}m")
+    _log(f"需求点: {len(demand_gdf)} 个 ({demand_summary['total_people']:,} 人)")
+    _log(f"可用避难点: {len(shelters_gdf)}/{len(shelters_all)} 个")
 
 # ── Path computation (always run for baseline) ──────────────
 with st.spinner("计算行人疏散路径 (基线)..."):
@@ -136,7 +144,7 @@ with st.spinner("计算行人疏散路径 (基线)..."):
     )
     path_elapsed = time.perf_counter() - t0
     n_valid = sum(1 for p in paths if p.node_path)
-    st.success(f"行人路径计算完成：{n_valid}/{len(paths)} 条，耗时 {path_elapsed:.1f}s")
+    _log(f"行人路径计算完成：{n_valid}/{len(paths)} 条，耗时 {path_elapsed:.1f}s")
 
 # ── Bus dispatch (optional) ───────────────────────────────────
 dispatch_result = None
@@ -163,7 +171,8 @@ if enable_bus and bus_params:
                     depot_id=depot.depot_id,
                     capacity=bus_params["bus_capacity"],
                 ))
-        st.success(f"生成 {len(depots)} 个集结区, {len(vehicles)} 辆车 (总运力 {sum(v.capacity for v in vehicles):,})")
+        _log(f"生成 {len(depots)} 个集结区, {len(vehicles)} 辆车 (总运力 {sum(v.capacity for v in vehicles):,})")
+        depot_locations = [d.location for d in depots]
 
     with st.spinner("构建调度优化模型 (OR-Tools CVRP)..."):
         demand_points = [g for g in demand_gdf.geometry]
@@ -186,18 +195,78 @@ if enable_bus and bus_params:
             n_used = sum(1 for r in dispatch_result.vehicle_routes.values() if len(r) > 1)
             n_sub = len(dispatch_result.sub_demand_quantities)
             n_unserved = len(dispatch_result.unserved_demand)
-            st.success(
-                f"调度求解完成: {dispatch_result.solver_status} "
-                f"({dispatch_result.runtime_s:.1f}s)\n\n"
-                f"使用车辆: {n_used}/{len(vehicles)} | "
-                f"服务子需求: {n_sub - n_unserved}/{n_sub} | "
-                f"未服务: {n_unserved}"
+            sub_qty = dispatch_result.sub_demand_quantities
+            total_assigned = sum(sub_qty[i] for i in range(len(sub_qty)) if i not in dispatch_result.unserved_demand)
+            _log(
+                f"调度: {dispatch_result.solver_status} "
+                f"({dispatch_result.runtime_s:.1f}s) | "
+                f"用车: {n_used}/{len(vehicles)}辆 | "
+                f"单趟接走: {total_assigned}人 / 总需求 {sum(sub_qty)}人"
             )
             sim_result = None
         else:
             st.warning(f"调度求解失败: {dispatch_result.solver_status}")
             sim_result = None
 
+# ── SUMO simulation (optional) ────────────────────────────────
+sumo_result = None
+sumo_bus_routes = []
+if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"):
+    import os as _os
+    SUMO_NET = _os.path.join(PROJECT_ROOT, "sumo", "networks", "xuzhou_full.net.xml")
+    SUMO_OUTPUT_DIR = _os.path.join(PROJECT_ROOT, "outputs", "sumo")
+
+    if not _os.path.exists(SUMO_NET):
+        st.warning("SUMO 路网未生成。请先运行 OSM→SUMO 转换。")
+    else:
+        with st.spinner("将调度方案转换为 SUMO 路径..."):
+            from src.simulation.route_builder import dispatch_to_sumo_trips
+            SUMO_ROUTES_DIR = _os.path.join(PROJECT_ROOT, "sumo", "routes")
+            try:
+                from src.simulation.route_builder import compute_rounds_needed
+                n_rounds = compute_rounds_needed(dispatch_result, vehicles, demand_gdf)
+                trip_path, route_path = dispatch_to_sumo_trips(
+                    dispatch_result, vehicles, depots, demand_gdf,
+                    SUMO_ROUTES_DIR, SUMO_NET,
+                    max_rounds=n_rounds,
+                )
+                _log(f"SUMO 路径转换完成 ({n_rounds} 轮循环)")
+
+                with st.spinner("运行 SUMO 仿真 (191k 路段, 需要 1-3 分钟)..."):
+                    from src.simulation.sumo_runner import create_sumocfg, run_sumo_headless
+                    sumocfg_path = _os.path.join(PROJECT_ROOT, "sumo", "configs", "simulation_v0.3.sumocfg")
+                    create_sumocfg(SUMO_NET, route_path, sumocfg_path)
+                    sumo_output_dir = _os.path.join(PROJECT_ROOT, "outputs", "sumo")
+                    sumo_result = run_sumo_headless(sumocfg_path, sumo_output_dir)
+
+                    if sumo_result.success:
+                        n_logs = len(sumo_result.vehicle_logs)
+                        n_finished = sumo_result.vehicles_arrived
+                        _log(
+                            f"SUMO 仿真: {n_finished}/{n_logs} 趟行程, "
+                            f"平均 {sumo_result.avg_duration_s:.0f}s, "
+                            f"{sumo_result.avg_speed_ms * 3.6:.1f} km/h"
+                        )
+
+                        # Extract trajectories for map overlay
+                        from src.simulation.sumo_runner import extract_vehicle_trajectories
+                        vehroute_path = _os.path.join(SUMO_OUTPUT_DIR, "vehroute.xml")
+                        if _os.path.exists(vehroute_path):
+                            sumo_trajectories = extract_vehicle_trajectories(vehroute_path, SUMO_NET)
+                            # Merge legs into per-vehicle trajectories
+                            merged: dict[str, list] = {}
+                            for t in sumo_trajectories:
+                                vid = t["vehicle_id"]
+                                if vid not in merged:
+                                    merged[vid] = {"vehicle_id": vid, "coords": [], "depart": t["depart"], "arrival": t["arrival"]}
+                                merged[vid]["coords"].extend(t["coords"])
+                                merged[vid]["arrival"] = max(merged[vid]["arrival"], t["arrival"])
+                            sumo_bus_routes = [v for v in merged.values() if len(v["coords"]) >= 2]
+                            _log(f"SUMO 轨迹提取完成: {len(sumo_bus_routes)} 辆车")
+                    else:
+                        st.warning(f"SUMO 仿真异常: {sumo_result.error}")
+            except Exception as e:
+                st.error(f"SUMO 流程失败: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # ── Build bus route paths for map (before tabs) ──────────────
@@ -240,19 +309,30 @@ if dispatch_result and vehicles and dispatch_result.solver_status in ("optimal",
                 bus_routes.append({"vehicle_id": vid, "coords": all_coords, "n_stops": n_stops})
 
         if bus_routes:
-            st.success(f"公交路线计算完成: {len(bus_routes)} 条")
+            _log(f"公交路线计算完成: {len(bus_routes)} 条")
         else:
-            st.info("所有公交车未被分配路线（需求超出运力）")
+            _log("所有公交车未被分配路线（需求超出运力）")
 
 # ═══════════════════════════════════════════════════════════════
 # ── Display results ──────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
 has_bus = bool(dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"))
+has_sumo = bool(sumo_result and sumo_result.success)
 
+tab_names = ["地图"]
 if has_bus:
-    t_map, t_dispatch, t_paths, t_data = st.tabs(["地图", "公交调度", "路径详情", "数据概览"])
-else:
-    t_map, t_paths, t_data = st.tabs(["地图", "路径详情", "数据概览"])
+    tab_names.append("公交调度")
+if has_sumo:
+    tab_names.append("SUMO 仿真")
+tab_names += ["路径详情", "数据概览"]
+
+all_tabs = st.tabs(tab_names)
+t_map = all_tabs[0]
+tab_idx = 1
+t_dispatch = all_tabs[tab_idx] if has_bus else None; tab_idx += 1 if has_bus else 0
+t_sumo = all_tabs[tab_idx] if has_sumo else None; tab_idx += 1 if has_sumo else 0
+t_paths = all_tabs[tab_idx]; tab_idx += 1
+t_data = all_tabs[tab_idx]
 
 # Tab: Map
 with t_map:
@@ -264,20 +344,45 @@ with t_map:
         shelters_gdf=shelters_gdf,
         paths=paths,
         affected_roads=affected,
-        bus_routes=bus_routes if bus_routes else None,
+        bus_routes=sumo_bus_routes if sumo_bus_routes else (bus_routes if bus_routes else None),
         depot_locations=depot_locations if depot_locations else None,
     )
-    st.caption("黑色: 行人步行路径 | 蓝色: 公交行驶路线 | 蓝色方块: 公交集结区")
+    if sumo_bus_routes:
+        st.caption("黑色: 行人步行路径 | 紫色: SUMO 公交轨迹 | 蓝色方块: 公交集结区")
+    else:
+        st.caption("黑色: 行人步行路径 | 蓝色: 公交行驶路线 | 蓝色方块: 公交集结区")
     render_metrics(paths, demand_gdf)
 
 # Tab: Dispatch
-if has_bus:
+if has_bus and t_dispatch:
     with t_dispatch:
         render_dispatch_results(
             dispatch_result, vehicles, depots,
             pedestrian_paths=paths,
             total_demand_people=int(demand_gdf["people_count"].sum()),
         )
+
+# Tab: SUMO
+if has_sumo and t_sumo:
+    with t_sumo:
+        st.subheader("SUMO 动态仿真结果")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("车辆发出", sumo_result.vehicles_inserted)
+        c2.metric("到达目的地", sumo_result.vehicles_arrived)
+        c3.metric("平均行程时间", f"{sumo_result.avg_duration_s:.0f}s")
+        c4.metric("平均速度", f"{sumo_result.avg_speed_ms * 3.6:.1f} km/h")
+
+        if sumo_result.vehicle_logs:
+            import pandas as pd
+            df_log = pd.DataFrame(sumo_result.vehicle_logs)
+            st.dataframe(
+                df_log[["id", "depart", "arrival", "duration", "routeLength", "waitingTime"]],
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                "上述为 SUMO 对每辆公交车的仿真结果。routeLength 为实际行驶距离(m), "
+                "waitingTime 为拥堵等待时间(s)。"
+            )
 
 # Tab: Path details
 with t_paths:
@@ -301,3 +406,8 @@ with t_data:
             "公交车数": len(vehicles),
             "总运力": sum(v.capacity for v in vehicles),
         })
+
+# ── Log expander (at bottom of page) ──────────────────────────
+if log_lines:
+    with st.expander("运行日志", expanded=False):
+        st.code("\n".join(log_lines), language=None)
