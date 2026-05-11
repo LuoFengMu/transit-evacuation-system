@@ -66,6 +66,8 @@ def render_map(
     shelters_gdf: gpd.GeoDataFrame,
     paths: Optional[list[PathResult]] = None,
     affected_roads: Optional[gpd.GeoDataFrame] = None,
+    bus_routes: Optional[list[dict]] = None,
+    depot_locations: Optional[list[Point]] = None,
 ) -> None:
     """Render the main evacuation map using Plotly + Streamlit."""
     fig = go.Figure()
@@ -128,7 +130,7 @@ def render_map(
         hovertemplate="%{text}<extra></extra>",
     ))
 
-    # ── 6. Evacuation paths — black, thick, hover info ────────
+    # ── 6. Pedestrian evacuation paths — black, thick ─────────
     if paths:
         shown = 0
         for p in paths:
@@ -145,7 +147,7 @@ def render_map(
                     lon=lons, lat=lats,
                     mode="lines",
                     line=dict(width=4, color="#000000"),
-                    name="疏散路径",
+                    name="行人疏散路径",
                     text=label,
                     hovertemplate=(
                         f"<b>{label}</b><br>"
@@ -155,9 +157,47 @@ def render_map(
                     showlegend=(shown == 0),
                 ))
                 shown += 1
-            elif p.path_geometry is None:
-                # Fallback straight line for unreachable destinations
-                pass
+
+    # ── 7. Bus depots (staging areas) ─────────────────────────
+    if depot_locations:
+        depot_lons = [p.x for p in depot_locations]
+        depot_lats = [p.y for p in depot_locations]
+        depot_names = ["集结区_东", "集结区_西", "集结区_南", "集结区_北"][:len(depot_locations)]
+        fig.add_trace(go.Scattermapbox(
+            lon=depot_lons, lat=depot_lats,
+            mode="markers+text",
+            marker=dict(size=22, color="#2980b9", opacity=0.9),
+            text=depot_names,
+            textposition="top center",
+            textfont=dict(size=12, color="#2980b9"),
+            name=f"公交集结区 ({len(depot_locations)})",
+            hovertemplate="<b>%{text}</b><extra></extra>",
+        ))
+
+    # ── 8. Bus routes — blue dashed, per-vehicle ──────────────
+    if bus_routes:
+        shown = 0
+        for br in bus_routes:
+            if shown >= 30:
+                break
+            coords = br.get("coords", [])
+            if len(coords) < 2:
+                continue
+            lons = [c[0] for c in coords]
+            lats = [c[1] for c in coords]
+            vid = br.get("vehicle_id", "")
+            n_stops = br.get("n_stops", 0)
+            fig.add_trace(go.Scattermapbox(
+                lon=lons, lat=lats,
+                mode="lines+markers",
+                line=dict(width=3, color="#2980b9"),
+                marker=dict(size=5, color="#2980b9"),
+                name="公交行驶路线",
+                text=f"<b>{vid}</b><br>停靠: {n_stops} 个需求点",
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=(shown == 0),
+            ))
+            shown += 1
 
     # ── Layout ────────────────────────────────────────────────
     if shelter_lats and demand_lats:

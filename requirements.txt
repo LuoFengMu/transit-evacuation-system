@@ -8,3 +8,4 @@ streamlit>=1.28
 plotly>=5.15
 pyyaml>=6.0
 pyproj>=3.5
+ortools>=9.9

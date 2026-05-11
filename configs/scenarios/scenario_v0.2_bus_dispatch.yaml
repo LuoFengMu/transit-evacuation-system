@@ -1,0 +1,32 @@
+# v0.2.0 公交调度场景：暴雨导致市中心内涝，公交应急疏散
+scenario_id: scenario_v0.2_bus_dispatch
+scenario_name: "徐州暴雨内涝 - 公交应急疏散"
+data_version: data_v0.1
+
+event:
+  type: "flood"
+  center: [117.205, 34.268]
+  radius_m: 1500
+  blocked_roads:
+    - road_1023
+    - road_2048
+  capacity_reduction_ratio: 0.5
+
+demand:
+  total_people: 10420
+  demand_points_file: "data/processed/demand_points_v0.1.geojson"
+
+bus:
+  enabled: true
+  num_buses: 15
+  capacity_per_bus: 80
+  boarding_rate: 2.0
+
+rail:
+  enabled: false
+
+simulation:
+  engine: null
+  duration_s: 7200
+  step_length_s: 1.0
+  random_seed: 42
