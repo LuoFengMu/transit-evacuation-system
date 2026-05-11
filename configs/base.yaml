@@ -1,0 +1,30 @@
+# 公交-轨道协同疏散仿真系统 - 全局默认配置
+# v0.1.0
+
+system:
+  name: "公交-轨道协同疏散仿真系统"
+  version: "0.1.0"
+
+city:
+  name: "徐州"
+  place_query: "Xuzhou, Jiangsu, China"
+  center: [117.205, 34.268]
+
+paths:
+  data_dir: "data"
+  scenarios_dir: "configs/scenarios"
+  outputs_dir: "outputs"
+
+network:
+  default_speed_kmh: 40
+  fallback_speed_kmh: 30
+
+simulation:
+  default_duration_s: 7200
+  default_step_length_s: 1.0
+  default_random_seed: 42
+
+visualization:
+  max_paths_on_map: 30
+  max_road_edges_sample: 2000
+  default_map_zoom: 11

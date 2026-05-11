@@ -1,0 +1,22 @@
+{
+  "manifest_schema_version": "1.0",
+  "data_version": "data_v0.1",
+  "created": "2026-05-11",
+  "description": "Xuzhou base data for minimum viable prototype (v0.1.0)",
+  "files": {
+    "osm_network": "data/osm/xuzhou_road_network.graphml",
+    "road_edges": "data/processed/road_edges_v0.1.geojson",
+    "road_nodes": "data/processed/road_nodes_v0.1.geojson",
+    "metro_stations": "data/processed/metro_stations_v0.1.geojson",
+    "shelters": "data/processed/shelters_v0.1.geojson",
+    "demand_points": "data/processed/demand_points_v0.1.geojson"
+  },
+  "stats": {
+    "road_edges_count": 56507,
+    "road_nodes_count": 22277,
+    "metro_stations_count": 214,
+    "shelters_count": 451,
+    "demand_points_count": 30,
+    "total_demand_people": 14253
+  }
+}

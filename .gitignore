@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Data (large files)
+data/osm/*.graphml
+data/raw/*.osm
+*.zip
+
+# Environment
+.env
+*.env.local
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/
+cache/
+*.streamlit/
