@@ -1,0 +1,4 @@
+line_id,line_name,train_capacity,normal_headway_min,emergency_headway_min,normal_freq_per_h,emergency_freq_per_h,direction,station_count,length_km,line_capacity_normal_pax_h,line_capacity_emergency_pax_h
+line_1,1号线,1440,5,3,12,20,东西,9,22,17280,28800
+line_2,2号线,1440,5,3,12,20,南北,8,24,17280,28800
+line_3,3号线,1440,6,4,10,15,东北-西南,3,18,14400,21600
