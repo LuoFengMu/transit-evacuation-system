@@ -1,0 +1,38 @@
+# v0.4.0 方案 B: 轨道优先
+scenario_id: B_rail_priority
+scenario_name: "方案B: 轨道优先"
+description: "近距离步行进站, 其余公交接驳轨道站"
+
+mode: rail_priority
+rail_enabled: true
+bus_enabled: true
+walk_enabled: true
+
+event:
+  type: "crowd"
+  center: [117.205, 34.268]
+  radius_m: 1500
+
+demand:
+  file: "data/processed/demand_points_v0.1.geojson"
+
+bus:
+  num_buses: 30
+  capacity_per_bus: 50
+
+rail:
+  stations_file: "data/processed/rail_stations_v0.4.geojson"
+  lines_file: "data/processed/rail_lines_v0.4.csv"
+  time_window_h: 1.0
+
+cooperative:
+  max_walk_s: 1800
+  max_bus_s: 3600
+  alpha: 1.0
+  beta: 1.2
+  gamma: 10.0
+  delta: 5.0
+
+simulation:
+  engine: "sumo"
+  duration_s: 7200

@@ -1,0 +1,27 @@
+# v0.4.0 方案 A: 公交直达避难点 (基线)
+scenario_id: A_bus_direct
+scenario_name: "方案A: 公交直达避难点"
+description: "需求点→公交→避难点, 无轨道参与"
+
+mode: bus_direct
+rail_enabled: false
+bus_enabled: true
+walk_enabled: true
+
+event:
+  type: "crowd"
+  center: [117.205, 34.268]
+  radius_m: 1500
+
+demand:
+  file: "data/processed/demand_points_v0.1.geojson"
+
+bus:
+  num_buses: 30
+  capacity_per_bus: 50
+
+rail: null
+
+simulation:
+  engine: "sumo"
+  duration_s: 7200
