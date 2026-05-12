@@ -1,9 +1,24 @@
-"""Convert OSM road network to SUMO .net.xml format.
-
-Uses netconvert's native OSM parser for reliable conversion.
-"""
+"""Convert OSM road network to SUMO .net.xml format."""
 import os
 import subprocess
+
+
+def _find_netconvert() -> str:
+    candidates = [
+        os.path.expanduser("~/Library/Python/3.9/bin/netconvert"),
+        os.path.expanduser("~/Library/Python/3.10/bin/netconvert"),
+        os.path.expanduser("~/Library/Python/3.11/bin/netconvert"),
+    ]
+    sumo_home = os.environ.get("SUMO_HOME", "")
+    if sumo_home:
+        candidates.insert(0, os.path.join(sumo_home, "bin", "netconvert"))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return "netconvert"
+
+
+_NETCONVERT = _find_netconvert()
 
 
 def build_sumo_network_from_osm(
@@ -26,7 +41,7 @@ def build_sumo_network_from_osm(
 
     result = subprocess.run(
         [
-            "netconvert",
+            _NETCONVERT,
             "--osm-files", osm_path,
             "--output-file", net_path,
             "--geometry.remove",

@@ -6,6 +6,7 @@ import os
 import time
 import yaml
 import streamlit as st
+import geopandas as gpd
 from shapely.geometry import Point
 
 from src.network.osm_loader import load_network_from_graphml, network_to_geodataframes
@@ -59,10 +60,9 @@ scenario = load_scenario(SCENARIO_PATH)
 st.sidebar.header("突发事件")
 event_type = st.sidebar.selectbox(
     "事件类型",
-    options=["flood", "fire", "accident", "crowd"],
+    options=["crowd"],
     index=0,
-    format_func=lambda x: {"flood": "暴雨", "fire": "火灾",
-                           "accident": "事故", "crowd": "大客流"}.get(x, x),
+    format_func=lambda x: {"crowd": "大客流"}.get(x, x),
 )
 radius_m = st.sidebar.slider("影响半径 (m)", 200, 5000, 1500, step=100)
 
@@ -78,8 +78,11 @@ if enable_bus:
 else:
     bus_params = None
 
-enable_sumo = st.sidebar.checkbox("启用 SUMO 仿真", value=False,
-    help="勾选后运行 SUMO 动态交通仿真（需要已下载 SUMO 路网）")
+enable_sumo = st.sidebar.checkbox("启用 SUMO 仿真", value=True,
+    help="勾选后运行 SUMO 动态交通仿真。关闭则使用 OSMnx 路网计算公交路线。")
+
+enable_traci = st.sidebar.checkbox("TraCI 道路封闭", value=False,
+    help="在SUMO仿真中实时关闭事件影响范围内的道路")
 
 run_btn = st.sidebar.button("运行分析", type="primary", use_container_width=True)
 
@@ -91,7 +94,7 @@ st.caption("v0.2.0 — 路网加载 · 事件模拟 · 公交调度优化 · 简
 if not run_btn:
     st.info("请在侧边栏配置场景参数，然后点击「运行分析」")
 
-    evt_label = {"flood":"暴雨","fire":"火灾","accident":"事故","crowd":"大客流"}.get(event_type, event_type)
+    evt_label = "大客流"
     st.markdown(f"**场景**: {scenario.get('scenario_name', '')}　|　**事件**: {evt_label}，半径 {radius_m}m　|　**公交**: {'启用' if enable_bus else '关闭'}")
     if enable_bus and bus_params:
         st.markdown(f"**运力**: {bus_params['n_buses']}辆 × {bus_params['bus_capacity']}人 = {bus_params['n_buses'] * bus_params['bus_capacity']}人")
@@ -112,9 +115,16 @@ with st.spinner("加载路网数据..."):
     G, nodes_gdf, edges_gdf = load_network(GRAPHML_PATH)
     _log(f"路网加载完成：{G.number_of_nodes():,} 节点, {G.number_of_edges():,} 边")
 
+BUS_STOPS_PATH = os.path.join(DATA_DIR, "processed", "bus_stops_v0.3.geojson")
+
 with st.spinner("加载疏散需求点和避难点..."):
     demand_gdf = load_demand_points(DEMAND_PATH)
     shelters_all = load_shelters(SHELTERS_PATH)
+
+# Load bus stops if available
+bus_stops_gdf = None
+if os.path.exists(BUS_STOPS_PATH):
+    bus_stops_gdf = gpd.read_file(BUS_STOPS_PATH)
 
 with st.spinner("解析突发事件..."):
     event = create_event_from_yaml(scenario)
@@ -133,6 +143,8 @@ with st.spinner("解析突发事件..."):
     _log(f"事件: {event.event_type} | 中心: 彭城广场 | 危险半径: {event.radius_m}m")
     _log(f"需求点: {len(demand_gdf)} 个 ({demand_summary['total_people']:,} 人)")
     _log(f"可用避难点: {len(shelters_gdf)}/{len(shelters_all)} 个")
+    if bus_stops_gdf is not None:
+        _log(f"公交站: {len(bus_stops_gdf)} 个")
 
 # ── Path computation (always run for baseline) ──────────────
 with st.spinner("计算行人疏散路径 (基线)..."):
@@ -175,17 +187,38 @@ if enable_bus and bus_params:
         depot_locations = [d.location for d in depots]
 
     with st.spinner("构建调度优化模型 (OR-Tools CVRP)..."):
-        demand_points = [g for g in demand_gdf.geometry]
-        demand_quantities = demand_gdf["people_count"].tolist()
+        # Snap demand points to nearest bus stops (or road nodes as fallback)
+        if bus_stops_gdf is not None and len(bus_stops_gdf) > 0:
+            # Snap each demand point to the nearest bus stop
+            board_pts = []
+            walk_dists = []
+            for _, demand in demand_gdf.iterrows():
+                best_dist = float("inf")
+                best_pt = None
+                for _, stop in bus_stops_gdf.iterrows():
+                    d = demand.geometry.distance(stop.geometry) * 111320
+                    if d < best_dist:
+                        best_dist = d
+                        best_pt = stop.geometry
+                board_pts.append(best_pt if best_pt else demand.geometry)
+                walk_dists.append(round(best_dist, 1))
+            n_far = sum(1 for d in walk_dists if d > 500)
+            _log(f"需求点→公交站: 平均 {sum(walk_dists)/len(walk_dists):.0f}m"
+                 + (f", {n_far}个超500m" if n_far > 0 else ""))
+        else:
+            from src.dispatch.bus_stops import snap_demands_to_network, get_board_points
+            demand_snapped = snap_demands_to_network(G, demand_gdf)
+            board_pts = get_board_points(demand_snapped)
+            _log("公交站数据未加载，使用路网节点作为乘降点")
 
-        # Use Euclidean cost matrix (fast, adequate for planning)
-        all_points = [d.location for d in depots] + demand_points
+        demand_quantities = demand_gdf["people_count"].tolist()
+        all_points = [d.location for d in depots] + board_pts
         cost = compute_euclidean_matrix(all_points, all_points)
 
         dispatch_result = solve_evacuation_dispatch(
             depots=depots,
             vehicles=vehicles,
-            demand_points=demand_points,
+            demand_points=board_pts,
             demand_quantities=demand_quantities,
             cost_matrix=cost,
             time_limit_s=bus_params["time_limit"],
@@ -211,6 +244,7 @@ if enable_bus and bus_params:
 # ── SUMO simulation (optional) ────────────────────────────────
 sumo_result = None
 sumo_bus_routes = []
+depot_locations = []
 if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"):
     import os as _os
     SUMO_NET = _os.path.join(PROJECT_ROOT, "sumo", "networks", "xuzhou_full.net.xml")
@@ -233,11 +267,26 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
                 _log(f"SUMO 路径转换完成 ({n_rounds} 轮循环)")
 
                 with st.spinner("运行 SUMO 仿真 (191k 路段, 需要 1-3 分钟)..."):
-                    from src.simulation.sumo_runner import create_sumocfg, run_sumo_headless
+                    from src.simulation.sumo_runner import (create_sumocfg, run_sumo_headless,
+                        run_sumo_with_traci, find_edges_near_event)
                     sumocfg_path = _os.path.join(PROJECT_ROOT, "sumo", "configs", "simulation_v0.3.sumocfg")
                     create_sumocfg(SUMO_NET, route_path, sumocfg_path)
                     sumo_output_dir = _os.path.join(PROJECT_ROOT, "outputs", "sumo")
-                    sumo_result = run_sumo_headless(sumocfg_path, sumo_output_dir)
+
+                    if enable_traci:
+                        closure_edges = find_edges_near_event(
+                            SUMO_NET,
+                            (event.center.x, event.center.y),
+                            event.radius_m * 1.2,
+                        )
+                        _log(f"TraCI 道路封闭: {len(closure_edges)} 条路段")
+                        sumo_result = run_sumo_with_traci(
+                            sumocfg_path, sumo_output_dir,
+                            road_closure_edges=closure_edges,
+                            closure_time_s=300,
+                        )
+                    else:
+                        sumo_result = run_sumo_headless(sumocfg_path, sumo_output_dir)
 
                     if sumo_result.success:
                         n_logs = len(sumo_result.vehicle_logs)
@@ -272,11 +321,9 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
 # ── Build bus route paths for map (before tabs) ──────────────
 # ═══════════════════════════════════════════════════════════════
 bus_routes = []
-depot_locations = []
-if dispatch_result and vehicles and dispatch_result.solver_status in ("optimal", "feasible"):
+if dispatch_result and vehicles and dispatch_result.solver_status in ("optimal", "feasible") and not sumo_bus_routes:
     with st.spinner("计算公交行驶路线..."):
         G_prepared = _prepare_graph(G)
-        depot_locations = [d.location for d in depots]
         demand_pts_list = [g for g in demand_gdf.geometry]
 
         for vid, route in dispatch_result.vehicle_routes.items():
@@ -348,9 +395,12 @@ with t_map:
         depot_locations=depot_locations if depot_locations else None,
     )
     if sumo_bus_routes:
-        st.caption("黑色: 行人步行路径 | 紫色: SUMO 公交轨迹 | 蓝色方块: 公交集结区")
-    else:
-        st.caption("黑色: 行人步行路径 | 蓝色: 公交行驶路线 | 蓝色方块: 公交集结区")
+        st.success(f"SUMO 仿真已运行 — {len(sumo_bus_routes)} 条公交轨迹 (紫色)")
+    elif enable_sumo and dispatch_result:
+        st.warning("SUMO 未产生轨迹，使用 OSMnx 路网路线 (蓝色) 作为替代。请展开底部「运行日志」查看详情。")
+    elif dispatch_result:
+        st.info("SUMO 未启用，显示 OSMnx 路网公交路线 (蓝色)")
+    st.caption("橙色: 行人路径 | 紫色/蓝色: 公交轨迹 | 点击图例切换图层")
     render_metrics(paths, demand_gdf)
 
 # Tab: Dispatch

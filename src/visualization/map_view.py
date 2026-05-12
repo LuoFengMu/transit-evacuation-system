@@ -69,7 +69,10 @@ def render_map(
     bus_routes: Optional[list[dict]] = None,
     depot_locations: Optional[list[Point]] = None,
 ) -> None:
-    """Render the main evacuation map using Plotly + Streamlit."""
+    """Render the main evacuation map using Plotly + Streamlit.
+
+    Tip: click legend items to toggle layer visibility.
+    """
     fig = go.Figure()
 
     # ── 1. Road network — single trace, 200 edges max ──────────
@@ -96,7 +99,7 @@ def render_map(
         hovertemplate=f"<b>{event.event_type}</b><br>半径: {event.radius_m}m<extra></extra>",
     ))
 
-    # ── 4. Shelters — green squares, larger ──────────────────
+    # ── 4. Shelters — green squares ──────────────────────────
     shelter_lons = [g.x for g in shelters_gdf.geometry]
     shelter_lats = [g.y for g in shelters_gdf.geometry]
     shelter_names = shelters_gdf.get("shelter_name", "")
@@ -130,11 +133,10 @@ def render_map(
         hovertemplate="%{text}<extra></extra>",
     ))
 
-    # ── 6. Pedestrian evacuation paths — black, thick ─────────
+    # ── 6. Pedestrian paths — orange, visible ──────────────────
     if paths:
-        shown = 0
-        for p in paths:
-            if shown >= 30:
+        for i, p in enumerate(paths):
+            if i >= 30:
                 break
             if p.path_geometry and p.path_geometry.geom_type == "LineString":
                 coords = list(p.path_geometry.coords)
@@ -146,17 +148,18 @@ def render_map(
                 fig.add_trace(go.Scattermapbox(
                     lon=lons, lat=lats,
                     mode="lines",
-                    line=dict(width=4, color="#000000"),
+                    line=dict(width=2.5, color="#e67e22"),
+                    opacity=0.75,
                     name="行人疏散路径",
+                    legendgroup="pedestrian",
                     text=label,
                     hovertemplate=(
                         f"<b>{label}</b><br>"
                         f"距离: {dist_km:.1f} km<br>"
                         f"耗时: {time_min:.1f} min<extra></extra>"
                     ),
-                    showlegend=(shown == 0),
+                    showlegend=(i == 0),
                 ))
-                shown += 1
 
     # ── 7. Bus depots (staging areas) ─────────────────────────
     if depot_locations:
@@ -181,9 +184,8 @@ def render_map(
         route_color = "#8e44ad" if is_sumo else "#2980b9"
         route_label = "SUMO 公交轨迹" if is_sumo else "公交行驶路线"
 
-        shown = 0
-        for br in bus_routes:
-            if shown >= 30:
+        for i, br in enumerate(bus_routes):
+            if i >= 30:
                 break
             coords = br.get("coords", [])
             if len(coords) < 2:
@@ -200,13 +202,13 @@ def render_map(
             fig.add_trace(go.Scattermapbox(
                 lon=lons, lat=lats,
                 mode="lines",
-                line=dict(width=4, color=route_color),
+                line=dict(width=5, color=route_color),
                 name=route_label,
+                legendgroup="bus",
                 text=hover_text,
                 hovertemplate="%{text}<extra></extra>",
-                showlegend=(shown == 0),
+                showlegend=(i == 0),
             ))
-            shown += 1
 
     # ── Layout ────────────────────────────────────────────────
     if shelter_lats and demand_lats:

@@ -211,8 +211,8 @@ def render_dispatch_params() -> dict:
     """Render dispatch parameter controls and return user selections."""
     st.sidebar.header("公交调度参数")
     st.sidebar.caption("公交从集结区出发，前往需求点接人送往安全区")
-    n_buses = st.sidebar.slider("公交车数量", 3, 40, 15, step=1)
-    bus_capacity = st.sidebar.slider("单车容量 (人)", 30, 150, 80, step=10)
+    n_buses = st.sidebar.slider("公交车数量", 3, 60, 30, step=1)
+    bus_capacity = st.sidebar.slider("单车容量 (人)", 30, 150, 50, step=10)
     boarding_rate = st.sidebar.slider("上车速率 (人/秒)", 1.0, 5.0, 2.0, step=0.5)
     time_limit = st.sidebar.slider("求解时间上限 (秒)", 5, 60, 30, step=5)
 
