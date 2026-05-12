@@ -3,59 +3,90 @@ import os
 import subprocess
 
 
+# Cached edge lookup for performance
+_edge_lookup: dict[str, tuple] = {}  # network_path → (edges_list, junction_coords, net_ox, net_oy, proj_str)
+
+
 def _find_nearest_edge(lon: float, lat: float, network_path: str) -> str:
     """Find the nearest SUMO edge ID to a WGS84 coordinate."""
     import xml.etree.ElementTree as ET
     from pyproj import Transformer
 
-    tree = ET.parse(network_path)
-    loc = tree.find(".//location")
-    if loc is None:
-        return ""
-    net_ox = float(loc.get("netOffset", "0,0").split(",")[0])
-    net_oy = float(loc.get("netOffset", "0,0").split(",")[1])
-    proj_str = loc.get("projParameter", "")
+    global _edge_lookup
 
-    try:
-        to_utm = Transformer.from_crs("EPSG:4326", proj_str, always_xy=True)
-    except Exception:
-        to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32650", always_xy=True)
+    if network_path not in _edge_lookup:
+        tree = ET.parse(network_path)
+        loc = tree.find(".//location")
+        net_ox = float(loc.get("netOffset", "0,0").split(",")[0]) if loc is not None else 0
+        net_oy = float(loc.get("netOffset", "0,0").split(",")[1]) if loc is not None else 0
+        proj_str = loc.get("projParameter", "") if loc is not None else ""
 
+        try:
+            to_utm = Transformer.from_crs("EPSG:4326", proj_str, always_xy=True)
+        except Exception:
+            to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32650", always_xy=True)
+
+        # Build junction lookup dict FIRST (O(1) instead of XPath)
+        junctions = {}
+        for jn in tree.findall(".//junction"):
+            jid = jn.get("id", "")
+            if jid:
+                junctions[jid] = (float(jn.get("x", 0)), float(jn.get("y", 0)))
+
+        # Build a spatial index: grid of edges for fast lookup
+        edges_by_grid: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
+        grid_size = 500
+
+        for edge in tree.findall(".//edge"):
+            eid = edge.get("id", "")
+            if eid.startswith(":"):
+                continue
+            shape_str = edge.get("shape", "")
+            if shape_str:
+                pts = shape_str.split()
+                if pts:
+                    parts = pts[len(pts)//2].split(",")
+                    if len(parts) == 2:
+                        ex, ey = float(parts[0]), float(parts[1])
+                        gx, gy = int(ex // grid_size), int(ey // grid_size)
+                        edges_by_grid.setdefault((gx, gy), []).append((eid, ex, ey))
+                        continue
+            # Use pre-built junction dict for O(1) lookup
+            from_j = edge.get("from", "")
+            to_j = edge.get("to", "")
+            fj = junctions.get(from_j)
+            if fj:
+                ex, ey = fj
+            else:
+                tj = junctions.get(to_j)
+                if tj:
+                    ex, ey = tj
+                else:
+                    continue
+            gx, gy = int(ex // grid_size), int(ey // grid_size)
+            edges_by_grid.setdefault((gx, gy), []).append((eid, ex, ey))
+
+        _edge_lookup[network_path] = (edges_by_grid, to_utm, net_ox, net_oy, grid_size)
+
+    edges_by_grid, to_utm, net_ox, net_oy, grid_size = _edge_lookup[network_path]
     utm_x, utm_y = to_utm.transform(lon, lat)
-    # Convert to SUMO internal: SUMO = UTM + netOffset
     sx = utm_x + net_ox
     sy = utm_y + net_oy
+
+    gx, gy = int(sx // grid_size), int(sy // grid_size)
 
     best_eid = ""
     best_dist = float("inf")
 
-    for edge in tree.findall(".//edge"):
-        eid = edge.get("id", "")
-        if eid.startswith(":"):
-            continue
-        shape_str = edge.get("shape", "")
-        if shape_str:
-            for pt in shape_str.split():
-                parts = pt.split(",")
-                if len(parts) == 2:
-                    ex, ey = float(parts[0]), float(parts[1])
-                    d = (ex - sx) ** 2 + (ey - sy) ** 2
-                    if d < best_dist:
-                        best_dist = d
-                        best_eid = eid
-        else:
-            # Check junctions
-            from_j = edge.get("from", "")
-            to_j = edge.get("to", "")
-            for jid in (from_j, to_j):
-                jn = tree.find(f".//junction[@id='{jid}']")
-                if jn is not None:
-                    jx = float(jn.get("x", 0))
-                    jy = float(jn.get("y", 0))
-                    d = (jx - sx) ** 2 + (jy - sy) ** 2
-                    if d < best_dist:
-                        best_dist = d
-                        best_eid = eid
+    # Search in current and neighboring grid cells
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            cell = edges_by_grid.get((gx + dx, gy + dy), [])
+            for eid, ex, ey in cell:
+                d = (ex - sx) ** 2 + (ey - sy) ** 2
+                if d < best_dist:
+                    best_dist = d
+                    best_eid = eid
 
     return best_eid
 
@@ -108,15 +139,6 @@ def dispatch_to_sumo_trips(
         f'length="12.0" maxSpeed="13.89" guiShape="bus"/>'
     )
 
-    # Pre-compute nearest SUMO edges for all locations
-    edge_cache: dict[tuple[float, float], str] = {}
-
-    def _get_edge(lon: float, lat: float) -> str:
-        key = (round(lon, 6), round(lat, 6))
-        if key not in edge_cache:
-            edge_cache[key] = _find_nearest_edge(lon, lat, network_path)
-        return edge_cache[key]
-
     for vid, route in dispatch_result.vehicle_routes.items():
         seq_pts = []
         for stop_type, stop_id, _ in route:
@@ -126,8 +148,10 @@ def dispatch_to_sumo_trips(
                         seq_pts.append((d.lon, d.lat))
                         break
             elif stop_type == "pickup" and isinstance(stop_id, int):
-                if stop_id < len(demand_pts):
-                    pt = demand_pts[stop_id]
+                # Map sub-demand index → original demand index
+                orig_idx = dispatch_result.split_origin_map.get(stop_id, stop_id)
+                if orig_idx < len(demand_pts):
+                    pt = demand_pts[orig_idx]
                     seq_pts.append((pt.x, pt.y))
         if len(seq_pts) < 2:
             continue
@@ -137,8 +161,8 @@ def dispatch_to_sumo_trips(
             for k in range(len(seq_pts) - 1):
                 from_lon, from_lat = seq_pts[k]
                 to_lon, to_lat = seq_pts[k + 1]
-                from_edge = _get_edge(from_lon, from_lat)
-                to_edge = _get_edge(to_lon, to_lat)
+                from_edge = _find_nearest_edge(from_lon, from_lat, network_path)
+                to_edge = _find_nearest_edge(to_lon, to_lat, network_path)
                 if not from_edge or not to_edge:
                     continue
                 trip_id = f"{vid}_r{round_num}_leg{k}"

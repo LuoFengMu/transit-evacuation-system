@@ -19,8 +19,9 @@ class DispatchResult:
     objective_value: float = 0.0
     solver_status: str = "unknown"
     runtime_s: float = 0.0
-    sub_demand_quantities: list = field(default_factory=list)  # people per sub-demand
+    sub_demand_quantities: list = field(default_factory=list)
     n_original_demands: int = 0
+    split_origin_map: dict = field(default_factory=dict)  # sub_idx → original_idx
 
 
 def build_and_solve_cvrp(
@@ -204,6 +205,7 @@ def solve_evacuation_dispatch(
         runtime_s=time.perf_counter() - t0,
         sub_demand_quantities=split_quantities,
         n_original_demands=len(demand_quantities),
+        split_origin_map=split_origin_map,
     )
 
     serviced_demands: set[int] = set()

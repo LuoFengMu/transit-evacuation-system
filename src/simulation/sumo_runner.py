@@ -81,7 +81,8 @@ def run_sumo_headless(sumocfg_path: str, output_dir: str) -> SumoSimResult:
            "--tripinfo-output.write-unfinished", "true",
            "--vehroute-output", vehroute_path,
            "--vehroute-output.exit-times", "true",
-           "--no-step-log", "--duration-log.statistics", "--no-warnings"]
+           "--no-step-log", "--duration-log.statistics", "--no-warnings",
+           "--ignore-route-errors"]
     result = SumoSimResult()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -134,7 +135,8 @@ def run_sumo_with_traci(
                       "--tripinfo-output.write-unfinished", "true",
                       "--vehroute-output", vehroute_path,
                       "--vehroute-output.exit-times", "true",
-                      "--no-step-log", "--no-warnings"])
+                      "--no-step-log", "--no-warnings",
+                      "--ignore-route-errors"])
         applied = False
         while traci.simulation.getMinExpectedNumber() > 0:
             traci.simulationStep()

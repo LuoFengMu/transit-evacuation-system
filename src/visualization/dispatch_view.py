@@ -15,6 +15,7 @@ def render_dispatch_results(
     depots: list[BusDepot],
     pedestrian_paths: list = None,
     total_demand_people: int = 0,
+    n_rounds: int = 1,
 ) -> None:
     """Display dispatch optimization results."""
     if dispatch_result.solver_status.startswith("error"):
@@ -75,61 +76,66 @@ def render_dispatch_results(
                 if stop_type == "pickup" and isinstance(stop_id, int) and stop_id < len(sub_qty):
                     assigned += sub_qty[stop_id]
             util_rows.append({
-                "车辆": vid.replace("depot_0", "D").replace("depot_0", "D").replace("_bus_", "🚌"),
+                "车辆": vid.replace("depot_0", "D").replace("_bus_", "🚌"),
                 "容量": v.capacity,
                 "分配人数": assigned,
                 "利用率": assigned / v.capacity if v.capacity > 0 else 0,
                 "剩余": v.capacity - assigned,
+                "趟次": n_rounds,
                 "集结区": vid.split("_")[0] + "_" + vid.split("_")[1] if "_" in vid else "",
             })
 
         if util_rows:
             df_util = pd.DataFrame(util_rows)
+            n_total = len(df_util)
+            page_size = 10
+            total_pages = max(1, (n_total + page_size - 1) // page_size)
 
-            # Horizontal stacked bar: assigned (filled) + remaining (hollow)
+            show_n = min(15, n_total)
+            df_page = df_util.head(show_n)
+
+            # Horizontal stacked bar
             fig = go.Figure()
-            # Assigned portion
             fig.add_trace(go.Bar(
-                y=df_util["车辆"], x=df_util["分配人数"],
-                name="已分配", orientation="h",
-                marker=dict(color=df_util["利用率"].apply(
+                y=df_page["车辆"], x=df_page["分配人数"],
+                name="分配人数", orientation="h",
+                marker=dict(color=df_page["利用率"].apply(
                     lambda r: "#27ae60" if r > 0.7 else ("#f39c12" if r > 0.3 else "#e74c3c")
                 )),
-                text=df_util.apply(
-                    lambda r: f"{r['分配人数']}人 ({r['利用率']:.0%})", axis=1
-                ),
-                textposition="inside",
-                insidetextanchor="middle",
+                text=df_page.apply(lambda r: f"{r['分配人数']}人 ({r['利用率']:.0%})", axis=1),
+                textposition="inside", insidetextanchor="middle",
                 hovertemplate="%{y}<br>分配: %{x}人<br>利用率: %{customdata:.0%}<extra></extra>",
-                customdata=df_util["利用率"],
+                customdata=df_page["利用率"],
             ))
-            # Remaining capacity
             fig.add_trace(go.Bar(
-                y=df_util["车辆"], x=df_util["剩余"],
+                y=df_page["车辆"], x=df_page["剩余"],
                 name="空余", orientation="h",
                 marker=dict(color="#ecf0f1", line=dict(color="#bdc3c7", width=1)),
                 hovertemplate="%{y}<br>空余: %{x}人<extra></extra>",
             ))
-
             fig.update_layout(
                 barmode="stack",
-                height=max(200, 40 * len(util_rows)),
-                margin=dict(l=10, r=10, t=30, b=10),
+                height=max(180, 35 * len(df_page) + 30),
+                margin=dict(l=10, r=10, t=10, b=10),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
                 xaxis_title="人数",
-                showlegend=True,
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Compact summary line
+            # Summary
             used_buses = [r for r in util_rows if r["分配人数"] > 0]
             avg_util = sum(r["利用率"] for r in used_buses) / len(used_buses) if used_buses else 0
-            idle = len(util_rows) - len(used_buses)
+            idle = n_total - len(used_buses)
+            total_cap = sum(r["容量"] for r in util_rows)
+            total_assigned = sum(r["分配人数"] for r in util_rows)
+            if n_total > show_n:
+                st.caption(f"显示前 {show_n} 辆，共 {n_total} 辆")
             st.caption(
-                f"{len(used_buses)}/{len(util_rows)} 辆车被分配任务"
+                f"{len(used_buses)}/{n_total} 辆车被分配任务"
                 + (f", {idle} 辆闲置" if idle > 0 else "")
                 + f" | 平均利用率 {avg_util:.0%}"
-                + f" | 总运力 {sum(r['容量'] for r in util_rows):,} → 已分配 {sum(r['分配人数'] for r in util_rows):,}"
+                + f" | 单趟运力 {total_cap:,} → 分配 {total_assigned:,}人"
+                + (f" | 循环 {n_rounds} 趟" if n_rounds > 1 else "")
             )
 
     # ── Multi-trip estimation ────────────────────────────────

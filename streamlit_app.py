@@ -1,6 +1,6 @@
 """
-v0.2.0 — 公交-轨道协同疏散仿真系统
-公交调度优化 + 简化仿真验证
+v0.3.0 — 公交-轨道协同疏散仿真系统
+SUMO 动态交通仿真 + 公交调度优化
 """
 import os
 import time
@@ -53,7 +53,7 @@ def load_network(path: str):
 
 # ── Sidebar — scenario config ────────────────────────────────
 st.sidebar.title("公交-轨道协同疏散仿真")
-st.sidebar.caption("v0.2.0 — 公交调度 + 简化仿真")
+st.sidebar.caption("v0.3.0 — SUMO 动态仿真 + 公交调度")
 
 scenario = load_scenario(SCENARIO_PATH)
 
@@ -89,11 +89,10 @@ run_btn = st.sidebar.button("运行分析", type="primary", use_container_width=
 
 # ── Main content ──────────────────────────────────────────────
 st.title("公交-轨道协同疏散仿真系统")
-st.caption("v0.2.0 — 路网加载 · 事件模拟 · 公交调度优化 · 简化仿真验证")
+st.caption("v0.3.0 — 路网加载 · 事件模拟 · 公交调度优化 · SUMO 动态仿真")
 
 if not run_btn:
     st.info("请在侧边栏配置场景参数，然后点击「运行分析」")
-
     evt_label = "大客流"
     st.markdown(f"**场景**: {scenario.get('scenario_name', '')}　|　**事件**: {evt_label}，半径 {radius_m}m　|　**公交**: {'启用' if enable_bus else '关闭'}")
     if enable_bus and bus_params:
@@ -107,6 +106,7 @@ if not run_btn:
 # ── Run analysis ──────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
 log_lines: list[str] = []
+depot_locations = []
 
 def _log(msg: str):
     log_lines.append(msg)
@@ -116,6 +116,10 @@ with st.spinner("加载路网数据..."):
     _log(f"路网加载完成：{G.number_of_nodes():,} 节点, {G.number_of_edges():,} 边")
 
 BUS_STOPS_PATH = os.path.join(DATA_DIR, "processed", "bus_stops_v0.3.geojson")
+
+with st.spinner("加载路网数据..."):
+    G, nodes_gdf, edges_gdf = load_network(GRAPHML_PATH)
+    _log(f"路网加载完成：{G.number_of_nodes():,} 节点, {G.number_of_edges():,} 边")
 
 with st.spinner("加载疏散需求点和避难点..."):
     demand_gdf = load_demand_points(DEMAND_PATH)
@@ -215,6 +219,10 @@ if enable_bus and bus_params:
         all_points = [d.location for d in depots] + board_pts
         cost = compute_euclidean_matrix(all_points, all_points)
 
+        # Build a GeoDataFrame with boarding point geometries for SUMO trip gen
+        board_gdf = demand_gdf.copy()
+        board_gdf["geometry"] = board_pts
+
         dispatch_result = solve_evacuation_dispatch(
             depots=depots,
             vehicles=vehicles,
@@ -226,8 +234,6 @@ if enable_bus and bus_params:
 
         if dispatch_result.solver_status in ("optimal", "feasible"):
             n_used = sum(1 for r in dispatch_result.vehicle_routes.values() if len(r) > 1)
-            n_sub = len(dispatch_result.sub_demand_quantities)
-            n_unserved = len(dispatch_result.unserved_demand)
             sub_qty = dispatch_result.sub_demand_quantities
             total_assigned = sum(sub_qty[i] for i in range(len(sub_qty)) if i not in dispatch_result.unserved_demand)
             _log(
@@ -236,15 +242,12 @@ if enable_bus and bus_params:
                 f"用车: {n_used}/{len(vehicles)}辆 | "
                 f"单趟接走: {total_assigned}人 / 总需求 {sum(sub_qty)}人"
             )
-            sim_result = None
         else:
             st.warning(f"调度求解失败: {dispatch_result.solver_status}")
-            sim_result = None
 
 # ── SUMO simulation (optional) ────────────────────────────────
 sumo_result = None
 sumo_bus_routes = []
-depot_locations = []
 if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"):
     import os as _os
     SUMO_NET = _os.path.join(PROJECT_ROOT, "sumo", "networks", "xuzhou_full.net.xml")
@@ -260,7 +263,7 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
                 from src.simulation.route_builder import compute_rounds_needed
                 n_rounds = compute_rounds_needed(dispatch_result, vehicles, demand_gdf)
                 trip_path, route_path = dispatch_to_sumo_trips(
-                    dispatch_result, vehicles, depots, demand_gdf,
+                    dispatch_result, vehicles, depots, board_gdf,
                     SUMO_ROUTES_DIR, SUMO_NET,
                     max_rounds=n_rounds,
                 )
@@ -363,7 +366,10 @@ if dispatch_result and vehicles and dispatch_result.solver_status in ("optimal",
 # ═══════════════════════════════════════════════════════════════
 # ── Display results ──────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
-has_bus = bool(dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"))
+has_bus = bool(
+    (dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"))
+    or st.session_state.get("dispatch_result")
+)
 has_sumo = bool(sumo_result and sumo_result.success)
 
 tab_names = ["地图"]
@@ -410,6 +416,7 @@ if has_bus and t_dispatch:
             dispatch_result, vehicles, depots,
             pedestrian_paths=paths,
             total_demand_people=int(demand_gdf["people_count"].sum()),
+            n_rounds=3,
         )
 
 # Tab: SUMO
