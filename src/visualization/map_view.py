@@ -68,6 +68,8 @@ def render_map(
     affected_roads: Optional[gpd.GeoDataFrame] = None,
     bus_routes: Optional[list[dict]] = None,
     depot_locations: Optional[list[Point]] = None,
+    rail_stations: Optional[list] = None,
+    rail_pressures: Optional[list] = None,
 ) -> None:
     """Render the main evacuation map using Plotly + Streamlit.
 
@@ -177,7 +179,47 @@ def render_map(
             hovertemplate="<b>%{text}</b><extra></extra>",
         ))
 
-    # ── 8. Bus routes — per-vehicle (OSMnx blue or SUMO purple) ──
+    # ── 7b. Rail stations — metro icons ────────────────────────
+    if rail_stations:
+        r_lons = [s.lon for s in rail_stations]
+        r_lats = [s.lat for s in rail_stations]
+        r_names = [s.station_name for s in rail_stations]
+        # Color by pressure if available
+        if rail_pressures:
+            press_map = {p.station_id: p for p in rail_pressures}
+            r_colors = []
+            r_labels = []
+            for s in rail_stations:
+                p = press_map.get(s.station_id)
+                if p and p.level == "severe":
+                    r_colors.append("#e74c3c")
+                    r_labels.append(f"{s.station_name} (严重过载)")
+                elif p and p.level == "overloaded":
+                    r_colors.append("#e67e22")
+                    r_labels.append(f"{s.station_name} (过载)")
+                elif p and p.level == "saturated":
+                    r_colors.append("#f39c12")
+                    r_labels.append(f"{s.station_name} (饱和)")
+                elif p and p.arrivals > 0:
+                    r_colors.append("#27ae60")
+                    r_labels.append(f"{s.station_name} (正常)")
+                else:
+                    r_colors.append("#3498db")
+                    r_labels.append(s.station_name)
+        else:
+            r_colors = ["#3498db"] * len(rail_stations)
+            r_labels = r_names
+
+        fig.add_trace(go.Scattermapbox(
+            lon=r_lons, lat=r_lats,
+            mode="markers",
+            marker=dict(size=16, color=r_colors, symbol="marker", opacity=0.9),
+            name=f"轨道站 ({len(rail_stations)})",
+            text=r_labels,
+            hovertemplate="<b>%{text}</b><extra></extra>",
+        ))
+
+    # ── 8. Bus routes — per-vehicle ──
     if bus_routes:
         # Detect SUMO trajectories (no 'n_stops' key → from SUMO)
         is_sumo = all("n_stops" not in br for br in bus_routes)
