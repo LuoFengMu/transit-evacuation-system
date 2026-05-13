@@ -25,6 +25,7 @@ from src.walking.access import compute_access_matrix
 from src.rail.cooperative import allocate_cooperative
 from src.evaluation.metrics import compute_evacuation_metrics, metrics_to_dict
 from src.evaluation.comparison import ComparisonResult
+from src.evaluation.report import render_report
 
 
 # ── Page config ───────────────────────────────────────────────
@@ -63,22 +64,38 @@ st.sidebar.caption("v0.4.0 — 公交-轨道协同疏散")
 
 scenario = load_scenario(SCENARIO_PATH)
 
-st.sidebar.header("突发事件")
-event_type = st.sidebar.selectbox(
-    "事件类型",
-    options=["crowd"],
+st.sidebar.header("大客流突发事件")
+event_type = "crowd"  # 固定为大客流场景
+
+event_location = st.sidebar.selectbox(
+    "事件地点",
+    options=["彭城广场", "徐州奥体中心", "徐州音乐厅", "徐州火车站", "徐州东站", "云龙湖广场"],
     index=0,
-    format_func=lambda x: {"crowd": "大客流"}.get(x, x),
 )
-radius_m = st.sidebar.slider("影响半径 (m)", 200, 5000, 1500, step=100)
+event_centers = {
+    "彭城广场": (117.205, 34.268),
+    "徐州奥体中心": (117.283, 34.251),
+    "徐州音乐厅": (117.172, 34.243),
+    "徐州火车站": (117.210, 34.275),
+    "徐州东站": (117.312, 34.267),
+    "云龙湖广场": (117.155, 34.245),
+}
+scenario["event"]["center"] = list(event_centers[event_location])
+scenario["event"]["type"] = event_type
+radius_m = st.sidebar.slider("人群聚集半径 (m)", 200, 5000, 1500, step=100,
+    help="大型活动散场时人群集中区域的范围半径")
 
 demand_scale = st.sidebar.selectbox(
     "疏散人数量级",
-    options=[10000, 30000, 50000, 100000],
+    options=[30000, 50000, 80000, 100000, 150000],
     index=0,
-    format_func=lambda x: f"{x//10000}万人" if x >= 10000 else f"{x}人",
+    format_func=lambda x: f"约{x//10000}万人" if x >= 10000 else f"{x}人",
 )
-st.session_state["demand_scale"] = demand_scale
+# Add ±15% random variation
+import random
+random.seed(int(time.time()))
+actual_demand = int(demand_scale * random.uniform(0.85, 1.15))
+st.session_state["demand_scale"] = actual_demand
 
 scenario["event"]["type"] = event_type
 scenario["event"]["radius_m"] = radius_m
@@ -100,9 +117,12 @@ enable_rail = st.sidebar.checkbox("启用轨道协同", value=True,
 
 if enable_rail:
     with st.sidebar.expander("轨道协同参数"):
-        walk_shelter_min = st.slider("步行到避难点上限(min)", 3, 15, 5, 1)
-        walk_rail_min = st.slider("步行到轨道站上限(min)", 10, 40, 30, 5)
-        pressure_limit = st.slider("轨道站压力上限", 0.5, 2.0, 1.0, 0.1)
+        walk_self_min = st.slider("步行自行离开上限(min)", 5, 30, 20, 1,
+            help="步行自行疏散的时间上限 (默认20分钟≈1.7km)")
+        walk_rail_min = st.slider("步行到轨道站上限(min)", 3, 20, 10, 1,
+            help="步行前往地铁站的时间上限 (默认10分钟≈800m)")
+        pressure_limit = st.slider("轨道站压力上限", 0.5, 2.0, 1.1, 0.1,
+            help="超过此压力值的轨道站不再接收公交接驳人群")
 
 enable_traci = st.sidebar.checkbox("TraCI 道路封闭", value=False,
     help="在SUMO仿真中实时关闭事件影响范围内的道路")
@@ -117,7 +137,7 @@ st.caption("v0.4.0 — 公交-轨道-步行协同疏散仿真系统")
 if not run_btn:
     st.info("请在侧边栏配置场景参数，然后点击「运行分析」")
     evt_label = "大客流"
-    st.markdown(f"**场景**: {scenario.get('scenario_name', '')}　|　**事件**: {evt_label}，半径 {radius_m}m　|　**需求**: {demand_scale//10000}万人　|　**公交**: {'启用' if enable_bus else '关闭'}")
+    st.markdown(f"**地点**: {event_location}　|　**事件**: {evt_label}，聚集半径 {radius_m}m　|　**需求**: 约{actual_demand//10000}万人　|　**公交**: {'启用' if enable_bus else '关闭'}")
     if enable_bus and bus_params:
         st.markdown(f"**运力**: {bus_params['n_buses']}辆 × {bus_params['bus_capacity']}人 = {bus_params['n_buses'] * bus_params['bus_capacity']}人")
     if enable_sumo:
@@ -153,12 +173,24 @@ bus_stops_gdf = None
 if os.path.exists(BUS_STOPS_PATH):
     bus_stops_gdf = gpd.read_file(BUS_STOPS_PATH)
 
-    # Scale demand to selected magnitude
+    # Shift demand points to event center (they were generated around 彭城广场)
+    default_center = (117.205, 34.268)
+    new_center = event_centers[event_location]
+    shift_lon = new_center[0] - default_center[0]
+    shift_lat = new_center[1] - default_center[1]
+    if shift_lon != 0 or shift_lat != 0:
+        demand_gdf["geometry"] = demand_gdf["geometry"].apply(
+            lambda g: Point(g.x + shift_lon, g.y + shift_lat))
+        demand_gdf["lon"] = demand_gdf["geometry"].apply(lambda g: g.x)
+        demand_gdf["lat"] = demand_gdf["geometry"].apply(lambda g: g.y)
+        _log(f"需求点平移: Δlon={shift_lon:.4f}, Δlat={shift_lat:.4f}")
+
+    # Scale demand to selected magnitude (with random variation)
     base_total = demand_gdf["people_count"].sum()
     if base_total > 0:
-        scale = demand_scale / base_total
+        scale = actual_demand / base_total
         demand_gdf["people_count"] = (demand_gdf["people_count"] * scale).astype(int)
-    _log(f"需求量级: {demand_scale:,}人")
+    _log(f"需求量级: {actual_demand:,}人 (基准{base_total:,}缩放{scale:.2f}x)")
 
 with st.spinner("解析突发事件..."):
     event = create_event_from_yaml(scenario)
@@ -174,9 +206,9 @@ with st.spinner("解析突发事件..."):
     demand_summary = summarize_demand(demand_gdf)
     shelter_summary = summarize_shelters(shelters_gdf)
 
-    _log(f"事件: {event.event_type} | 中心: 彭城广场 | 危险半径: {event.radius_m}m")
+    _log(f"事件: 大客流 | 地点: {event_location} | 聚集半径: {event.radius_m}m")
     _log(f"需求点: {len(demand_gdf)} 个 ({demand_summary['total_people']:,} 人)")
-    _log(f"可用避难点: {len(shelters_gdf)}/{len(shelters_all)} 个")
+    _log(f"安全区域: {len(shelters_gdf)}/{len(shelters_all)} 处")
     if bus_stops_gdf is not None:
         _log(f"公交站: {len(bus_stops_gdf)} 个")
 
@@ -197,13 +229,20 @@ dispatch_result = None
 sim_result = None
 if enable_bus and bus_params:
     with st.spinner("生成公交集结区和车辆数据..."):
-        # Place depots at fixed locations near the event center (outside danger zone)
-        offset = radius_m * 1.5 / 111320  # 1.5× event radius away
-        depot_defs = [
-            ("depot_00", "公交集结区_东", event.center.x + offset, event.center.y),
-            ("depot_01", "公交集结区_西", event.center.x - offset, event.center.y),
-            ("depot_02", "公交集结区_南", event.center.x, event.center.y - offset),
+        # Real bus depots/terminals in Xuzhou (from Overpass API)
+        all_depots = [
+            ("徐州老火车站", 117.1989, 34.2689),
+            ("徐州汽车总站", 117.1998, 34.2637),
+            ("铜山汽车站", 117.2000, 34.2623),
+            ("宣武客运站", 117.1945, 34.2588),
+            ("徐州汽车客运西站", 117.1334, 34.2565),
+            ("徐州东站公交枢纽", 117.313, 34.268),
+            ("徐州站北广场", 117.211, 34.278),
         ]
+        # Sort by distance to current event center, pick closest 3
+        cx, cy = event_centers[event_location]
+        all_depots.sort(key=lambda x: (x[1]-cx)**2 + (x[2]-cy)**2)
+        depot_defs = [(f"depot_{i:02d}", name, lon, lat) for i, (name, lon, lat) in enumerate(all_depots[:3])]
         depots = [
             BusDepot(did, dname, dlon, dlat, 20, Point(dlon, dlat))
             for did, dname, dlon, dlat in depot_defs
@@ -278,6 +317,7 @@ if enable_bus and bus_params:
 # ── SUMO simulation (optional) ────────────────────────────────
 sumo_result = None
 sumo_bus_routes = []
+n_rounds_display = 1
 if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"):
     import os as _os
     SUMO_NET = _os.path.join(PROJECT_ROOT, "sumo", "networks", "xuzhou_full.net.xml")
@@ -290,8 +330,12 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
             from src.simulation.route_builder import dispatch_to_sumo_trips
             SUMO_ROUTES_DIR = _os.path.join(PROJECT_ROOT, "sumo", "routes")
             try:
-                from src.simulation.route_builder import compute_rounds_needed
-                n_rounds = compute_rounds_needed(dispatch_result, vehicles, demand_gdf)
+                # Rounds needed = total_demand / (buses × capacity), capped at 20
+                total_cap = sum(v.capacity for v in vehicles)
+                total_demand = int(demand_gdf["people_count"].sum())
+                n_rounds = max(1, min((total_demand // max(total_cap, 1)) + 1, 20))
+                n_rounds_display = n_rounds
+                _log(f"循环轮次: {n_rounds} (需求{total_demand:,} / 运力{total_cap:,})")
                 trip_path, route_path = dispatch_to_sumo_trips(
                     dispatch_result, vehicles, depots, board_gdf,
                     SUMO_ROUTES_DIR, SUMO_NET,
@@ -370,30 +414,32 @@ if enable_rail and os.path.exists(RAIL_STATIONS_PATH):
         access = compute_access_matrix(demand_gdf, rail_gdf, shelters_gdf)
         avg_rail_walk = sum(a["walk_time_s"] for a in access["to_rail"]) / len(access["to_rail"])
         avg_shelter_walk = sum(a["walk_time_s"] for a in access["to_shelter"]) / len(access["to_shelter"])
-        _log(f"步行接入: 轨道站 {avg_rail_walk/60:.1f}min, 避难点 {avg_shelter_walk/60:.1f}min")
+        _log(f"步行接入: 轨道站 {avg_rail_walk/60:.1f}min, 步行离开 {avg_shelter_walk/60:.1f}min")
 
     with st.spinner("协同分配 (需求点→避难点/轨道站)..."):
         dp_list = []
         for i, (_, demand) in enumerate(demand_gdf.iterrows()):
             ra = access["to_rail"][i] if i < len(access["to_rail"]) else {}
             sa = access["to_shelter"][i] if i < len(access["to_shelter"]) else {}
-            # Estimate bus travel times: ~1/3 of walking time as rough approx
+            # Find top-3 nearest rail stations for load balancing
+            rail_dists = []
+            for j, (_, station) in enumerate(rail_gdf.iterrows()):
+                d = demand.geometry.distance(station.geometry) * 111320
+                rail_dists.append((station["station_id"], d))
+            rail_dists.sort(key=lambda x: x[1])
+            rail_candidates = [rid for rid, _ in rail_dists[:3]]
             dp_list.append({
                 "demand_id": demand["demand_id"], "people": int(demand["people_count"]),
                 "walk_to_shelter_s": sa.get("walk_time_s", 9999),
                 "walk_to_rail_s": ra.get("walk_time_s", 9999),
-                "bus_to_shelter_s": sa.get("walk_time_s", 9999) / 3,
-                "bus_to_rail_s": ra.get("walk_time_s", 9999) / 3,
-                "nearest_shelter_id": sa.get("target_id", ""),
                 "nearest_rail_id": ra.get("target_id", ""),
+                "rail_candidates": rail_candidates,
             })
-        shelter_dicts = [{"shelter_id": r["shelter_id"], "capacity": int(r["capacity"])}
-                         for _, r in shelters_gdf.iterrows()]
         bus_cap = (bus_params["n_buses"] * bus_params["bus_capacity"]) if bus_params else 1500
 
         allocation_result = allocate_cooperative(
-            dp_list, rail_stations, shelter_dicts,
-            walk_shelter_max_s=walk_shelter_min * 60,
+            dp_list, rail_stations,
+            walk_self_max_s=walk_self_min * 60,
             walk_rail_max_s=walk_rail_min * 60,
             pressure_limit=pressure_limit,
             bus_capacity_per_round=bus_cap,
@@ -405,8 +451,8 @@ if enable_rail and os.path.exists(RAIL_STATIONS_PATH):
         mode_counts = {}
         for v in allocation_result.destination_type.values():
             mode_counts[v] = mode_counts.get(v, 0) + 1
-        _log(f"协同: 步行避难点{mode_counts.get('walk_shelter',0)} 步行轨道{mode_counts.get('walk_rail',0)} "
-             f"公交轨道{mode_counts.get('bus_rail',0)} 公交避难点{mode_counts.get('bus_shelter',0)} "
+        _log(f"协同: 步行离开{mode_counts.get('walk_self',0)} 步行轨道{mode_counts.get('walk_rail',0)} "
+             f"公交轨道{mode_counts.get('bus_rail',0)} 公交外围{mode_counts.get('bus_periphery',0)} "
              f"未分配{len(allocation_result.unassigned)}")
 
         # Compute metrics
@@ -417,27 +463,21 @@ if enable_rail and os.path.exists(RAIL_STATIONS_PATH):
         )
         comparison.add("方案C: 混合协同", evac_metrics)
 
-        # Baseline A: bus-to-shelter only (no rail)
+        # Baseline A: bus-only (no rail)
         baseline_result = allocate_cooperative(
-            dp_list, [], shelter_dicts,
-            walk_shelter_max_s=walk_shelter_min * 60,
+            dp_list, [],
+            walk_self_max_s=walk_self_min * 60,
             bus_capacity_per_round=bus_cap, max_rounds=3,
         )
         baseline_metrics = compute_evacuation_metrics(demand_gdf, baseline_result, walking_access=access)
-        comparison.add("方案A: 公交直达", baseline_metrics)
+        comparison.add("方案A: 纯公交", baseline_metrics)
 
-        # Baseline B: rail priority (force rail for non-walk)
-        dp_rail_bias = []
-        for dp in dp_list:
-            d = dict(dp)
-            d["bus_to_rail_s"] = d.get("bus_to_rail_s", 9999) * 0.5
-            d["bus_to_shelter_s"] = d.get("bus_to_shelter_s", 9999) * 2.0
-            dp_rail_bias.append(d)
+        # Baseline B: rail priority
         rail_priority_result = allocate_cooperative(
-            dp_rail_bias, rail_stations, shelter_dicts,
-            walk_shelter_max_s=walk_shelter_min * 60,
+            dp_list, rail_stations,
+            walk_self_max_s=walk_self_min * 60,
             walk_rail_max_s=walk_rail_min * 60,
-            pressure_limit=pressure_limit,
+            pressure_limit=pressure_limit * 0.8,
             bus_capacity_per_round=bus_cap, max_rounds=3,
         )
         rail_priority_metrics = compute_evacuation_metrics(demand_gdf, rail_priority_result, walking_access=access)
@@ -491,6 +531,12 @@ if dispatch_result and vehicles and dispatch_result.solver_status in ("optimal",
 # ═══════════════════════════════════════════════════════════════
 # ── Display results ──────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
+# Ensure n_rounds_display is set (from SUMO section or compute now)
+if n_rounds_display == 1 and dispatch_result and vehicles:
+    total_cap = sum(v.capacity for v in vehicles)
+    total_demand_all = int(demand_gdf["people_count"].sum())
+    n_rounds_display = max(1, min((total_demand_all // max(total_cap, 1)) + 1, 20))
+
 has_bus = bool(
     (dispatch_result and dispatch_result.solver_status in ("optimal", "feasible"))
     or st.session_state.get("dispatch_result")
@@ -507,7 +553,7 @@ if has_rail:
     tab_names.append("方案对比")
 if has_sumo:
     tab_names.append("SUMO 仿真")
-tab_names += ["路径详情", "数据概览"]
+tab_names += ["路径详情", "总结报告", "数据概览"]
 
 all_tabs = st.tabs(tab_names)
 t_map = all_tabs[0]
@@ -518,6 +564,7 @@ t_pressure = all_tabs[tab_idx] if has_rail else None; tab_idx += 1 if has_rail e
 t_comparison = all_tabs[tab_idx] if has_rail else None; tab_idx += 1 if has_rail else 0
 t_sumo = all_tabs[tab_idx] if has_sumo else None; tab_idx += 1 if has_sumo else 0
 t_paths = all_tabs[tab_idx]; tab_idx += 1
+t_report = all_tabs[tab_idx]; tab_idx += 1
 t_data = all_tabs[tab_idx]
 
 # Tab: Map
@@ -534,6 +581,7 @@ with t_map:
         depot_locations=depot_locations if depot_locations else None,
         rail_stations=rail_stations if rail_stations else None,
         rail_pressures=station_pressures if station_pressures else None,
+        show_shelters=False,
     )
     if sumo_bus_routes:
         st.success(f"SUMO 仿真已运行 — {len(sumo_bus_routes)} 条公交轨迹 (紫色)")
@@ -551,7 +599,7 @@ if has_bus and t_dispatch:
             dispatch_result, vehicles, depots,
             pedestrian_paths=paths,
             total_demand_people=int(demand_gdf["people_count"].sum()),
-            n_rounds=3,
+            n_rounds=n_rounds_display,
         )
 
 # Tab: Rail cooperative
@@ -560,8 +608,8 @@ if has_rail and t_rail:
         st.subheader("协同分配结果 (5 种方式)")
 
         mode_labels = {
-            "walk_shelter": "步行→避难点", "walk_rail": "步行→轨道站",
-            "bus_rail": "公交→轨道站", "bus_shelter": "公交→避难点",
+            "walk_self": "步行自行离开", "walk_rail": "步行→轨道站",
+            "bus_rail": "公交→轨道站", "bus_periphery": "公交→外围疏散",
         }
         dest_types = allocation_result.destination_type
         mode_counts = {}
@@ -582,9 +630,9 @@ if has_rail and t_rail:
                     "轮次": rr.round_id,
                     "本轮到": rr.served_people,
                     "剩余": rr.remaining_people,
-                    "步行": rr.walk_assigned,
+                    "步行离开": rr.walk_self,
                     "轨道": rr.rail_assigned,
-                    "避难点": rr.shelter_assigned,
+                    "外围公交": rr.bus_periphery,
                     "未疏散": rr.unserved,
                 })
             st.dataframe(pd.DataFrame(rr_rows), use_container_width=True, hide_index=True)
@@ -616,6 +664,8 @@ if has_rail and t_pressure and station_pressures:
 
         press_rows = []
         for p in station_pressures:
+            if p.arrivals <= 0:
+                continue  # only show stations with actual arrivals
             color = {"normal": "#27ae60", "saturated": "#f39c12",
                      "overloaded": "#e67e22", "severe": "#e74c3c"}.get(p.level, "#95a5a6")
             press_rows.append({
@@ -626,29 +676,29 @@ if has_rail and t_pressure and station_pressures:
                 "状态": p.level,
                 "颜色": color,
             })
-        df_press = pd.DataFrame(press_rows).sort_values("压力指数", ascending=False)
-
-        # Horizontal bar chart
-        fig = px.bar(
-            df_press, x="压力指数", y="站点", orientation="h",
-            color="状态",
-            color_discrete_map={"normal": "#27ae60", "saturated": "#f39c12",
-                                "overloaded": "#e67e22", "severe": "#e74c3c"},
-            title="站点压力 (绿色正常/黄色饱和/橙色过载/红色严重)",
-        )
-        fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.dataframe(
-            df_press[["站点", "到达人数", "处理能力", "压力指数", "状态"]],
-            use_container_width=True, hide_index=True,
-        )
+        if not press_rows:
+            st.info("暂无轨道站分配到疏散人群")
+        else:
+            df_press = pd.DataFrame(press_rows).sort_values("压力指数", ascending=False)
+            fig = px.bar(
+                df_press, x="压力指数", y="站点", orientation="h",
+                color="状态",
+                color_discrete_map={"normal": "#27ae60", "saturated": "#f39c12",
+                                    "overloaded": "#e67e22", "severe": "#e74c3c"},
+                title="站点压力",
+            )
+            fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(
+                df_press[["站点", "到达人数", "处理能力", "压力指数", "状态"]],
+                use_container_width=True, hide_index=True,
+            )
 
 # Tab: Comparison
 if has_rail and t_comparison:
     with t_comparison:
         st.subheader("方案对比: 公交直达 vs 混合协同")
-        comparison.render_chart()
+        comparison.render_chart(key="tab")
         comparison.render_table()
 
 # Tab: SUMO
@@ -677,6 +727,31 @@ if has_sumo and t_sumo:
 with t_paths:
     st.subheader("行人疏散路径")
     render_path_table(paths)
+
+# Tab: Report
+with t_report:
+    has_data = (
+        dispatch_result and dispatch_result.solver_status in ("optimal", "feasible")
+    ) or allocation_result is not None
+    if has_data:
+        render_report(
+            demand_summary=demand_summary if 'demand_summary' in dir() else {},
+            shelter_summary=shelter_summary if 'shelter_summary' in dir() else {},
+            dispatch_result=dispatch_result,
+            allocation_result=allocation_result,
+            station_pressures=station_pressures,
+            comparison=comparison,
+            sumo_result=sumo_result,
+            path_time_s=path_elapsed if 'path_elapsed' in dir() else 0,
+            dispatch_time_s=dispatch_result.runtime_s if dispatch_result else 0,
+            sumo_time_s=sumo_result.avg_duration_s if (sumo_result and sumo_result.success) else None,
+            bus_params=bus_params,
+            demand_scale=demand_scale,
+            event_type=event_type,
+            radius_m=radius_m,
+        )
+    else:
+        st.info("请先运行分析")
 
 # Tab: Data overview
 with t_data:

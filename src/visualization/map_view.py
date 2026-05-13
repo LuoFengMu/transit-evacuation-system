@@ -11,6 +11,15 @@ from src.network.event import EmergencyEvent
 from src.network.pathfinder import PathResult
 
 
+def _make_circle(cx: float, cy: float, radius_m: float, n: int = 48):
+    """Generate lat/lon points for a circle of given radius (meters)."""
+    import numpy as np
+    angles = np.linspace(0, 2 * np.pi, n)
+    lons = cx + (radius_m / 111320) * np.cos(angles)
+    lats = cy + (radius_m / 111320) * np.sin(angles)
+    return lons.tolist(), lats.tolist()
+
+
 def _color_for_type(event_type: str) -> str:
     colors = {
         "flood": "#3498db", "earthquake": "#e74c3c", "fire": "#e67e22",
@@ -70,6 +79,7 @@ def render_map(
     depot_locations: Optional[list[Point]] = None,
     rail_stations: Optional[list] = None,
     rail_pressures: Optional[list] = None,
+    show_shelters: bool = True,
 ) -> None:
     """Render the main evacuation map using Plotly + Streamlit.
 
@@ -88,32 +98,45 @@ def render_map(
             affected_roads, color="#e74c3c", width=4, name="封闭道路", sample_n=500,
         ))
 
-    # ── 3. Event center ───────────────────────────────────────
-    ev_color = _color_for_type(event.event_type)
+    # ── 3. Event center — dark red square, white ⚠ ──────────
     fig.add_trace(go.Scattermapbox(
         lon=[event.center.x], lat=[event.center.y],
         mode="markers+text",
-        marker=dict(size=20, color=ev_color, opacity=0.8),
+        marker=dict(size=30, color="#c0392b", opacity=1.0),
         text=["⚠"],
         textposition="middle center",
-        textfont=dict(size=16, color="white"),
-        name=f"事件: {event.event_type}",
-        hovertemplate=f"<b>{event.event_type}</b><br>半径: {event.radius_m}m<extra></extra>",
+        textfont=dict(size=22, color="white"),
+        name="事件中心",
+        hovertemplate=f"<b>大客流</b><br>聚集半径: {event.radius_m}m<extra></extra>",
     ))
 
-    # ── 4. Shelters — green squares ──────────────────────────
-    shelter_lons = [g.x for g in shelters_gdf.geometry]
-    shelter_lats = [g.y for g in shelters_gdf.geometry]
-    shelter_names = shelters_gdf.get("shelter_name", "")
-    shelter_caps = shelters_gdf.get("capacity", 0)
+    # Event influence circle (semi-transparent)
+    circle_lons, circle_lats = _make_circle(event.center.x, event.center.y, event.radius_m)
     fig.add_trace(go.Scattermapbox(
-        lon=shelter_lons, lat=shelter_lats,
-        mode="markers",
-        marker=dict(size=14, color="#27ae60", opacity=0.85),
-        name=f"避难点 ({len(shelters_gdf)})",
-        text=[f"<b>{n}</b><br>容量: {c:,}人" for n, c in zip(shelter_names, shelter_caps)],
-        hovertemplate="%{text}<extra></extra>",
+        lon=circle_lons, lat=circle_lats,
+        mode="lines",
+        line=dict(width=2, color="#c0392b"),
+        fill="toself",
+        fillcolor="rgba(231,76,60,0.08)",
+        name="聚集范围",
+        hoverinfo="skip",
+        showlegend=False,
     ))
+
+    # ── 4. Shelters — green squares (only if enabled) ────────
+    if show_shelters:
+        shelter_lons = [g.x for g in shelters_gdf.geometry]
+        shelter_lats = [g.y for g in shelters_gdf.geometry]
+        shelter_names = shelters_gdf.get("shelter_name", "")
+        shelter_caps = shelters_gdf.get("capacity", 0)
+        fig.add_trace(go.Scattermapbox(
+            lon=shelter_lons, lat=shelter_lats,
+            mode="markers",
+            marker=dict(size=14, color="#27ae60", opacity=0.85),
+            name=f"避难点 ({len(shelters_gdf)})",
+            text=[f"<b>{n}</b><br>容量: {c:,}人" for n, c in zip(shelter_names, shelter_caps)],
+            hovertemplate="%{text}<extra></extra>",
+        ))
 
     # ── 5. Demand points — red circles, size ∝ people ────────
     demand_lons = [g.x for g in demand_gdf.geometry]
@@ -221,10 +244,10 @@ def render_map(
 
     # ── 8. Bus routes — per-vehicle ──
     if bus_routes:
-        # Detect SUMO trajectories (no 'n_stops' key → from SUMO)
         is_sumo = all("n_stops" not in br for br in bus_routes)
-        route_color = "#8e44ad" if is_sumo else "#2980b9"
         route_label = "SUMO 公交轨迹" if is_sumo else "公交行驶路线"
+        colors_10 = ["#e74c3c","#3498db","#2ecc71","#f39c12","#9b59b6",
+                     "#1abc9c","#e67e22","#2980b9","#27ae60","#8e44ad"]
 
         for i, br in enumerate(bus_routes):
             if i >= 30:
@@ -236,6 +259,7 @@ def render_map(
             lats = [c[1] for c in coords]
             vid = br.get("vehicle_id", "")
             n_stops = br.get("n_stops", 0)
+            vcolor = colors_10[i % len(colors_10)] if is_sumo else "#2980b9"
             hover_text = f"<b>{vid}</b>"
             if is_sumo:
                 hover_text += f"<br>出发: {br.get('depart', 0):.0f}s<br>到达: {br.get('arrival', 0):.0f}s"
@@ -244,7 +268,7 @@ def render_map(
             fig.add_trace(go.Scattermapbox(
                 lon=lons, lat=lats,
                 mode="lines",
-                line=dict(width=5, color=route_color),
+                line=dict(width=5, color=vcolor),
                 name=route_label,
                 legendgroup="bus",
                 text=hover_text,
@@ -253,9 +277,16 @@ def render_map(
             ))
 
     # ── Layout ────────────────────────────────────────────────
-    if shelter_lats and demand_lats:
-        center_lat = (sum(demand_lats) / len(demand_lats) + sum(shelter_lats) / len(shelter_lats)) / 2
-        center_lon = (sum(demand_lons) / len(demand_lons) + sum(shelter_lons) / len(shelter_lons)) / 2
+    if demand_lats:
+        if show_shelters and shelter_lats:
+            center_lat = (sum(demand_lats) / len(demand_lats) + sum(shelter_lats) / len(shelter_lats)) / 2
+            center_lon = (sum(demand_lons) / len(demand_lons) + sum(shelter_lons) / len(shelter_lons)) / 2
+        elif rail_stations:
+            center_lat = (sum(demand_lats) / len(demand_lats) + sum(r_lats) / len(r_lats)) / 2
+            center_lon = (sum(demand_lons) / len(demand_lons) + sum(r_lons) / len(r_lons)) / 2
+        else:
+            center_lat = sum(demand_lats) / len(demand_lats)
+            center_lon = sum(demand_lons) / len(demand_lons)
     else:
         center_lat, center_lon = 34.27, 117.20
 

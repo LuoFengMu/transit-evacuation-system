@@ -78,15 +78,18 @@ def _find_nearest_edge(lon: float, lat: float, network_path: str) -> str:
     best_eid = ""
     best_dist = float("inf")
 
-    # Search in current and neighboring grid cells
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            cell = edges_by_grid.get((gx + dx, gy + dy), [])
-            for eid, ex, ey in cell:
-                d = (ex - sx) ** 2 + (ey - sy) ** 2
-                if d < best_dist:
-                    best_dist = d
-                    best_eid = eid
+    # Search expanding squares: try ±1 (±500m), ±2 (±1km), ..., up to ±20 (±10km)
+    for radius in range(1, 25):
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                cell = edges_by_grid.get((gx + dx, gy + dy), [])
+                for eid, ex, ey in cell:
+                    d = (ex - sx) ** 2 + (ey - sy) ** 2
+                    if d < best_dist:
+                        best_dist = d
+                        best_eid = eid
+        if best_eid:
+            break  # found edge, stop
 
     return best_eid
 
@@ -173,6 +176,9 @@ def dispatch_to_sumo_trips(
                 )
                 vehicle_depart += 5.0
             vehicle_depart += round_trip_s
+
+    trip_count = sum(1 for l in lines if l.strip().startswith("<trip"))
+    print(f"  [route_builder] {trip_count} trips generated from {len(dispatch_result.vehicle_routes)} routes", flush=True)
 
     lines.append("</routes>")
     with open(trip_path, "w") as f:

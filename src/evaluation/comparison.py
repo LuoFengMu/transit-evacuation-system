@@ -25,7 +25,7 @@ class ComparisonResult:
             rows.append(d)
         return pd.DataFrame(rows)
 
-    def render_chart(self):
+    def render_chart(self, key: str = "comp"):
         if len(self.metrics) < 2:
             st.info("需要至少两个方案进行对比")
             return
@@ -36,7 +36,6 @@ class ComparisonResult:
         # Split into two groups by scale
         rate_metrics = {
             "completion_rate": ("疏散完成率", "成功率"),
-            "rail_share": ("轨道分担率", "占比"),
             "max_station_pressure": ("最大站点压力", "压力指数"),
         }
         dist_metrics = {
@@ -74,7 +73,7 @@ class ComparisonResult:
             barmode="group",
         )
         fig.update_yaxes(range=[0, 1.3], row=1, col=1)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"comp_chart_{key}")
 
     def render_table(self):
         df = self.to_dataframe()
