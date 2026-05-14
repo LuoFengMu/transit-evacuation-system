@@ -238,53 +238,48 @@ def _parse_tripinfo(path: str) -> list[dict]:
 def extract_vehicle_trajectories(
     vehroute_path: str, network_path: str,
 ) -> list[dict]:
-    import xml.etree.ElementTree as ET
-    from pyproj import Transformer
+    """Extract trajectories using sumolib: lane shape > edge shape > from/to nodes.
 
-    net_tree = ET.parse(network_path)
-    location = net_tree.find(".//location")
-    net_offset_x = float(location.get("netOffset", "0,0").split(",")[0]) if location is not None else 0
-    net_offset_y = float(location.get("netOffset", "0,0").split(",")[1]) if location is not None else 0
-    proj_str = location.get("projParameter", "") if location is not None else ""
-    try:
-        to_wgs84 = Transformer.from_crs(proj_str, "EPSG:4326", always_xy=True)
-    except Exception:
-        to_wgs84 = Transformer.from_crs("EPSG:32650", "EPSG:4326", always_xy=True)
+    Uses net.convertXY2LonLat() for correct coordinate conversion.
+    Splits trajectories at gaps >300m to avoid cross-lake lines.
+    Each vehicle gets its own polyline (never merged).
+    """
+    import sys, os, xml.etree.ElementTree as ET
+    sumo_home = os.environ.get("SUMO_HOME", "")
+    if not sumo_home:
+        for d in [os.path.expanduser("~/Library/Python/3.9/lib/python/site-packages/sumo"),
+                   os.path.expanduser("~/Library/Python/3.10/lib/python/site-packages/sumo")]:
+            if os.path.isdir(d): sumo_home = d; break
+    if sumo_home and sumo_home not in sys.path:
+        sys.path.insert(0, os.path.join(sumo_home, "tools"))
+    import sumolib
 
-    # Build junction coordinate lookup
-    junction_coords = {}
-    for junction in net_tree.findall(".//junction"):
-        jid = junction.get("id", "")
-        jx = float(junction.get("x", 0))
-        jy = float(junction.get("y", 0))
-        utm_x = jx - net_offset_x
-        utm_y = jy - net_offset_y
-        lon, lat = to_wgs84.transform(utm_x, utm_y)
-        junction_coords[jid] = (lon, lat)
+    net = sumolib.net.readNet(network_path)
+    MAX_GAP_M = 300
 
-    # Build edge geometry lookup (shape or from-to junctions)
-    edge_geoms = {}
-    for edge in net_tree.findall(".//edge"):
-        eid = edge.get("id", "")
-        shape_str = edge.get("shape", "")
-        if shape_str:
-            coords = []
-            for pt in shape_str.split():
-                parts = pt.split(",")
-                if len(parts) == 2:
-                    sumo_x, sumo_y = float(parts[0]), float(parts[1])
-                    utm_x = sumo_x - net_offset_x
-                    utm_y = sumo_y - net_offset_y
-                    lon, lat = to_wgs84.transform(utm_x, utm_y)
-                    coords.append((lon, lat))
-            if coords:
-                edge_geoms[eid] = coords
-        else:
-            # Build from junction coordinates
-            from_j = edge.get("from", "")
-            to_j = edge.get("to", "")
-            if from_j in junction_coords and to_j in junction_coords:
-                edge_geoms[eid] = [junction_coords[from_j], junction_coords[to_j]]
+    # Build edge geometry: lane shape → edge shape → from/to node
+    edge_geoms: dict[str, list[tuple[float, float]]] = {}
+    for edge in net.getEdges():
+        eid = edge.getID()
+        if eid.startswith(":"):
+            continue
+        shape_xy = None
+        try:
+            if edge.getLanes():
+                shape_xy = edge.getLanes()[0].getShape()
+        except Exception:
+            pass
+        if not shape_xy:
+            try:
+                shape_xy = edge.getShape()
+            except Exception:
+                pass
+        if not shape_xy:
+            try:
+                shape_xy = [edge.getFromNode().getCoord(), edge.getToNode().getCoord()]
+            except Exception:
+                continue
+        edge_geoms[eid] = [net.convertXY2LonLat(x, y) for x, y in shape_xy]
 
     route_tree = ET.parse(vehroute_path)
     trajectories = []
@@ -298,31 +293,33 @@ def extract_vehicle_trajectories(
         edges_str = route.get("edges", "")
         if not edges_str:
             continue
+
         edge_ids = edges_str.split()
         all_coords: list = []
+        ec, spc, miss = 0, 0, 0
         for eid in edge_ids:
             geom = edge_geoms.get(eid)
             if geom is None:
-                # Try common suffix patterns
-                for suffix in ["#0", "#1", "#2", "_0", "_1"]:
-                    if eid.endswith(suffix):
-                        geom = edge_geoms.get(eid[: -len(suffix)])
-                        if geom:
-                            break
-                if geom is None:
-                    # Try prefix match (strip lane-addon suffixes)
-                    base = eid.split("#")[0]
-                    geom = edge_geoms.get(base)
-            if geom:
-                if all_coords and all_coords[-1] == geom[0]:
-                    all_coords.extend(geom[1:])
-                else:
-                    all_coords.extend(geom)
+                for base in [eid.split("#")[0], eid.rsplit("_", 1)[0] if "_" in eid else None]:
+                    if base and base in edge_geoms:
+                        geom = edge_geoms[base]; break
+            if geom is None:
+                miss += 1; continue
+            ec += 1; spc += len(geom)
+            if all_coords:
+                px, py = all_coords[-1]; cx, cy = geom[0]
+                dist = (((cx - px) * 111320) ** 2 + ((cy - py) * 111320) ** 2) ** 0.5
+                if dist > MAX_GAP_M:
+                    if len(all_coords) >= 2:
+                        trajectories.append(dict(vehicle_id=vid.split("_leg")[0] if "_leg" in vid else vid,
+                            coords=all_coords, depart=depart, arrival=arrival,
+                            edge_count=ec, shape_pt_count=spc, missing_edges=miss))
+                    all_coords = []; ec = spc = miss = 0; all_coords.extend(geom); continue
+                all_coords.extend(geom[1:] if all_coords[-1] == geom[0] else geom)
+            else:
+                all_coords.extend(geom)
         if len(all_coords) >= 2:
-            trajectories.append({
-                "vehicle_id": vid.split("_leg")[0] if "_leg" in vid else vid,
-                "coords": all_coords,
-                "depart": depart,
-                "arrival": arrival,
-            })
+            trajectories.append(dict(vehicle_id=vid.split("_leg")[0] if "_leg" in vid else vid,
+                coords=all_coords, depart=depart, arrival=arrival,
+                edge_count=ec, shape_pt_count=spc, missing_edges=miss))
     return trajectories

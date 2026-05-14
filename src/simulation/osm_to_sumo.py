@@ -90,7 +90,6 @@ def crop_network(
             "--sumo-net-file", input_net,
             "--output-file", output_net,
             "--boundary", f"{xmin},{ymin},{xmax},{ymax}",
-            "--no-internal-links",
             "--ignore-errors", "--no-warnings",
         ],
         capture_output=True, text=True, timeout=120,

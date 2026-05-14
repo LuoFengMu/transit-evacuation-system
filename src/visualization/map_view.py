@@ -176,7 +176,7 @@ def render_map(
                     mode="lines",
                     line=dict(width=2.5, color="#e67e22"),
                     opacity=0.75,
-                    name="行人疏散路径",
+                    name="步行接入估计线",
                     legendgroup="pedestrian",
                     text=label,
                     hovertemplate=(
@@ -261,7 +261,7 @@ def render_map(
                 mode="lines",
                 line=dict(width=1.5, color="#95a5a6"),
                 opacity=0.45,
-                name="步行接入",
+                name="OD连接 (需求→轨道站)",
                 hoverinfo="skip",
                 showlegend=(i == 0),
             ))
