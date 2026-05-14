@@ -80,6 +80,7 @@ def render_map(
     rail_stations: Optional[list] = None,
     rail_pressures: Optional[list] = None,
     show_shelters: bool = True,
+    walking_paths: Optional[list[dict]] = None,
 ) -> None:
     """Render the main evacuation map using Plotly + Streamlit.
 
@@ -235,12 +236,35 @@ def render_map(
 
         fig.add_trace(go.Scattermapbox(
             lon=r_lons, lat=r_lats,
-            mode="markers",
+            mode="markers+text",
             marker=dict(size=16, color=r_colors, symbol="marker", opacity=0.9),
+            text=r_names,
+            textposition="top center",
+            textfont=dict(size=9, color="#2c3e50"),
             name=f"轨道站 ({len(rail_stations)})",
-            text=r_labels,
             hovertemplate="<b>%{text}</b><extra></extra>",
+            customdata=r_labels,
         ))
+
+    # ── 7c. Walking paths — gray dashed ─────────────────────
+    if walking_paths:
+        for i, wp in enumerate(walking_paths):
+            if i >= 30:
+                break
+            coords = wp.get("coords", [])
+            if len(coords) < 2:
+                continue
+            lons = [c[0] for c in coords]
+            lats = [c[1] for c in coords]
+            fig.add_trace(go.Scattermapbox(
+                lon=lons, lat=lats,
+                mode="lines",
+                line=dict(width=1.5, color="#95a5a6"),
+                opacity=0.45,
+                name="步行接入",
+                hoverinfo="skip",
+                showlegend=(i == 0),
+            ))
 
     # ── 8. Bus routes — per-vehicle ──
     if bus_routes:

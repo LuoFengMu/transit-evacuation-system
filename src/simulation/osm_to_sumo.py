@@ -61,6 +61,47 @@ def build_sumo_network_from_osm(
     return net_path
 
 
+def crop_network(
+    input_net: str,
+    output_net: str,
+    center_lon: float,
+    center_lat: float,
+    radius_m: float = 8000,
+) -> str:
+    """Crop a SUMO network to a bounding box around a center point.
+
+    Uses netconvert --boundary to keep only edges within the box.
+    Much faster simulation on the cropped sub-network.
+    """
+    import subprocess, os
+    os.makedirs(os.path.dirname(output_net), exist_ok=True)
+
+    # Convert meters to degrees (approximate)
+    dlon = radius_m / 111320
+    dlat = radius_m / 111320
+    xmin = center_lon - dlon
+    xmax = center_lon + dlon
+    ymin = center_lat - dlat
+    ymax = center_lat + dlat
+
+    result = subprocess.run(
+        [
+            _NETCONVERT,
+            "--sumo-net-file", input_net,
+            "--output-file", output_net,
+            "--boundary", f"{xmin},{ymin},{xmax},{ymax}",
+            "--no-internal-links",
+            "--ignore-errors", "--no-warnings",
+        ],
+        capture_output=True, text=True, timeout=120,
+    )
+
+    if not os.path.exists(output_net):
+        raise RuntimeError(f"Network crop failed: {result.stderr}")
+
+    return output_net
+
+
 def download_xuzhou_osm(output_path: str) -> str:
     """Download Xuzhou OSM data via OSMnx and save as .osm.xml."""
     import osmnx as ox

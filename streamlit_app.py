@@ -87,7 +87,7 @@ radius_m = st.sidebar.slider("人群聚集半径 (m)", 200, 5000, 1500, step=100
 
 demand_scale = st.sidebar.selectbox(
     "疏散人数量级",
-    options=[30000, 50000, 80000, 100000, 150000],
+    options=[30000, 50000, 80000, 100000, 150000, 200000],
     index=0,
     format_func=lambda x: f"约{x//10000}万人" if x >= 10000 else f"{x}人",
 )
@@ -123,6 +123,9 @@ if enable_rail:
             help="步行前往地铁站的时间上限 (默认10分钟≈800m)")
         pressure_limit = st.slider("轨道站压力上限", 0.5, 2.0, 1.1, 0.1,
             help="超过此压力值的轨道站不再接收公交接驳人群")
+
+enable_crop = st.sidebar.checkbox("SUMO 子网裁剪", value=True,
+    help="只保留事件周边8km路网，大幅加快仿真速度")
 
 enable_traci = st.sidebar.checkbox("TraCI 道路封闭", value=False,
     help="在SUMO仿真中实时关闭事件影响范围内的道路")
@@ -326,6 +329,27 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
     if not _os.path.exists(SUMO_NET):
         st.warning("SUMO 路网未生成。请先运行 OSM→SUMO 转换。")
     else:
+        # Optionally crop network to event area
+        sumo_net_actual = SUMO_NET
+        if enable_crop:
+            cropped_net = _os.path.join(PROJECT_ROOT, "sumo", "networks", "xuzhou_cropped.net.xml")
+            if not _os.path.exists(cropped_net) or True:  # always recrop for new event location
+                from src.simulation.osm_to_sumo import crop_network
+                try:
+                    sumo_net_actual = crop_network(
+                        SUMO_NET, cropped_net,
+                        event_centers[event_location][0],
+                        event_centers[event_location][1],
+                        radius_m=8000,
+                    )
+                    import xml.etree.ElementTree as ET
+                    ct = ET.parse(sumo_net_actual)
+                    n_edges = len(ct.findall(".//edge"))
+                    _log(f"SUMO 子网裁剪: {n_edges} 边 (8km半径)")
+                except Exception as e:
+                    _log(f"裁剪失败, 使用全网: {e}")
+                    sumo_net_actual = SUMO_NET
+
         with st.spinner("将调度方案转换为 SUMO 路径..."):
             from src.simulation.route_builder import dispatch_to_sumo_trips
             SUMO_ROUTES_DIR = _os.path.join(PROJECT_ROOT, "sumo", "routes")
@@ -338,7 +362,7 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
                 _log(f"循环轮次: {n_rounds} (需求{total_demand:,} / 运力{total_cap:,})")
                 trip_path, route_path = dispatch_to_sumo_trips(
                     dispatch_result, vehicles, depots, board_gdf,
-                    SUMO_ROUTES_DIR, SUMO_NET,
+                    SUMO_ROUTES_DIR, sumo_net_actual,
                     max_rounds=n_rounds,
                 )
                 _log(f"SUMO 路径转换完成 ({n_rounds} 轮循环)")
@@ -347,12 +371,12 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
                     from src.simulation.sumo_runner import (create_sumocfg, run_sumo_headless,
                         run_sumo_with_traci, find_edges_near_event)
                     sumocfg_path = _os.path.join(PROJECT_ROOT, "sumo", "configs", "simulation_v0.3.sumocfg")
-                    create_sumocfg(SUMO_NET, route_path, sumocfg_path)
+                    create_sumocfg(sumo_net_actual, route_path, sumocfg_path)
                     sumo_output_dir = _os.path.join(PROJECT_ROOT, "outputs", "sumo")
 
                     if enable_traci:
                         closure_edges = find_edges_near_event(
-                            SUMO_NET,
+                            sumo_net_actual,
                             (event.center.x, event.center.y),
                             event.radius_m * 1.2,
                         )
@@ -378,7 +402,7 @@ if enable_sumo and dispatch_result and dispatch_result.solver_status in ("optima
                         from src.simulation.sumo_runner import extract_vehicle_trajectories
                         vehroute_path = _os.path.join(SUMO_OUTPUT_DIR, "vehroute.xml")
                         if _os.path.exists(vehroute_path):
-                            sumo_trajectories = extract_vehicle_trajectories(vehroute_path, SUMO_NET)
+                            sumo_trajectories = extract_vehicle_trajectories(vehroute_path, sumo_net_actual)
                             # Merge legs into per-vehicle trajectories
                             merged: dict[str, list] = {}
                             for t in sumo_trajectories:
@@ -416,7 +440,15 @@ if enable_rail and os.path.exists(RAIL_STATIONS_PATH):
         avg_shelter_walk = sum(a["walk_time_s"] for a in access["to_shelter"]) / len(access["to_shelter"])
         _log(f"步行接入: 轨道站 {avg_rail_walk/60:.1f}min, 步行离开 {avg_shelter_walk/60:.1f}min")
 
-    with st.spinner("协同分配 (需求点→避难点/轨道站)..."):
+        # Build walking path lines for map
+        walking_paths = []
+        for a in access["to_rail"]:
+            walking_paths.append({
+                "coords": [(a["origin_lon"], a["origin_lat"]),
+                           (a["target_lon"], a["target_lat"])],
+            })
+
+    with st.spinner("协同分配 (需求点→轨道站)..."):
         dp_list = []
         for i, (_, demand) in enumerate(demand_gdf.iterrows()):
             ra = access["to_rail"][i] if i < len(access["to_rail"]) else {}
@@ -582,6 +614,7 @@ with t_map:
         rail_stations=rail_stations if rail_stations else None,
         rail_pressures=station_pressures if station_pressures else None,
         show_shelters=False,
+        walking_paths=walking_paths if walking_paths else None,
     )
     if sumo_bus_routes:
         st.success(f"SUMO 仿真已运行 — {len(sumo_bus_routes)} 条公交轨迹 (紫色)")

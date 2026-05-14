@@ -178,7 +178,9 @@ def dispatch_to_sumo_trips(
             vehicle_depart += round_trip_s
 
     trip_count = sum(1 for l in lines if l.strip().startswith("<trip"))
-    print(f"  [route_builder] {trip_count} trips generated from {len(dispatch_result.vehicle_routes)} routes", flush=True)
+    total_attempts = len(dispatch_result.vehicle_routes) * max_rounds
+    match_rate = trip_count / max(total_attempts, 1) * 100
+    print(f"  [route_builder] {trip_count} trips / ~{total_attempts} attempts ({match_rate:.0f}% match)", flush=True)
 
     lines.append("</routes>")
     with open(trip_path, "w") as f:
