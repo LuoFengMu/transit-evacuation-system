@@ -213,14 +213,20 @@ def render_dispatch_results(
         )
 
 
-def render_dispatch_params() -> dict:
-    """Render dispatch parameter controls and return user selections."""
+def render_dispatch_params(bus_yaml: dict | None = None) -> dict:
+    """Render dispatch parameter controls and return user selections.
+
+    Args:
+        bus_yaml: Optional bus section from scenario YAML for default values.
+    """
+    bus_yaml = bus_yaml or {}
     st.sidebar.header("公交调度参数")
     st.sidebar.caption("公交从集结区出发，前往需求点接人送往安全区")
     ds = st.session_state.get("demand_scale", 30000)
-    default_buses = max(30, ds // 400)
-    n_buses = st.sidebar.slider("公交车数量", 5, 300, min(default_buses, 300), step=5)
-    bus_capacity = st.sidebar.slider("单车容量 (人)", 30, 150, 50, step=10)
+    yaml_n_buses = bus_yaml.get("num_buses", max(30, ds // 400))
+    yaml_capacity = bus_yaml.get("capacity_per_bus", 50)
+    n_buses = st.sidebar.slider("公交车数量", 5, 300, min(yaml_n_buses, 300), step=5)
+    bus_capacity = st.sidebar.slider("单车容量 (人)", 30, 150, yaml_capacity, step=10)
     boarding_rate = st.sidebar.slider("上车速率 (人/秒)", 1.0, 5.0, 2.0, step=0.5)
     time_limit = st.sidebar.slider("求解时间上限 (秒)", 5, 60, 30, step=5)
 

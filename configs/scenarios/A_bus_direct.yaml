@@ -1,4 +1,4 @@
-# v0.4.0 方案 A: 公交直达避难点 (基线)
+# v0.4.1 方案 A: 公交直达避难点 (基线)
 scenario_id: A_bus_direct
 scenario_name: "方案A: 公交直达避难点"
 description: "需求点→公交→避难点, 无轨道参与"
@@ -10,11 +10,17 @@ walk_enabled: true
 
 event:
   type: "crowd"
+  location: "彭城广场"
   center: [117.205, 34.268]
   radius_m: 1500
 
 demand:
   file: "data/processed/demand_points_v0.1.geojson"
+  scale: 30000
+  random_variation: false
+  variation_ratio: 0.15
+  snap_to_road: true
+  filter_water: false
 
 bus:
   num_buses: 30
@@ -22,6 +28,16 @@ bus:
 
 rail: null
 
+walk:
+  mode: "euclidean_fast"
+
+sumo:
+  enabled: true
+  crop_network: true
+  traci_closure: false
+
 simulation:
   engine: "sumo"
   duration_s: 7200
+  random_seed: 42
+  cost_matrix_mode: "euclidean_fast"

@@ -9,3 +9,6 @@ plotly>=5.15
 pyyaml>=6.0
 pyproj>=3.5
 ortools>=9.9
+pytest>=8.0
+scikit-learn>=1.3
+pyarrow>=14.0

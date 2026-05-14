@@ -34,13 +34,31 @@ def compute_evacuation_metrics(
     m = EvacuationMetrics()
     m.total_demand = int(demand_gdf["people_count"].sum())
 
-    dest_types = allocation_result.destination_type
-    n_rail = sum(1 for v in dest_types.values() if v == "rail")
-    n_shelter = sum(1 for v in dest_types.values() if v == "shelter")
-    n_total = len(dest_types)
+    # ── Mode shares by people count ──────────────────────────
+    mode_people = getattr(allocation_result, "mode_people", {})
+    walk_rail = mode_people.get("walk_rail", 0)
+    bus_rail = mode_people.get("bus_rail", 0)
+    walk_self = mode_people.get("walk_self", 0)
+    bus_periphery = mode_people.get("bus_periphery", 0)
 
-    m.rail_share = n_rail / n_total if n_total > 0 else 0
-    m.bus_direct_share = n_shelter / n_total if n_total > 0 else 0
+    m.rail_share = (walk_rail + bus_rail) / m.total_demand if m.total_demand > 0 else 0
+    m.bus_direct_share = (bus_rail + bus_periphery) / m.total_demand if m.total_demand > 0 else 0
+    m.walk_direct_share = (walk_self + walk_rail) / m.total_demand if m.total_demand > 0 else 0
+
+    m.total_evacuated = walk_rail + bus_rail + walk_self + bus_periphery
+    # If dispatch_result is richer, use it (only for bus-dispatched people)
+    if dispatch_result and dispatch_result.vehicle_routes:
+        sub_qty = dispatch_result.sub_demand_quantities
+        dispatched = sum(sub_qty[i] for i in range(len(sub_qty)) if i not in dispatch_result.unserved_demand)
+        # Use the larger of the two: allocation covers all modes, dispatch covers bus
+        if dispatched > (walk_rail + bus_rail + walk_self + bus_periphery):
+            m.total_evacuated = dispatched
+
+    m.unserved = max(
+        m.total_demand - m.total_evacuated,
+        getattr(allocation_result, "unassigned_people", 0),
+    )
+    m.completion_rate = m.total_evacuated / m.total_demand if m.total_demand > 0 else 0
 
     # Walk distances
     if walking_access:
@@ -58,16 +76,6 @@ def compute_evacuation_metrics(
         m.max_station_pressure = max(pressures) if pressures else 0
         m.overloaded_stations = sum(1 for p in station_pressures if p.level in ("overloaded", "severe"))
 
-    # Bus utilization (from dispatch)
-    if dispatch_result and dispatch_result.vehicle_routes:
-        sub_qty = dispatch_result.sub_demand_quantities
-        total_assigned = sum(sub_qty[i] for i in range(len(sub_qty)) if i not in dispatch_result.unserved_demand)
-        m.total_evacuated = total_assigned
-    else:
-        m.total_evacuated = m.total_demand - len(allocation_result.unassigned)
-
-    m.completion_rate = m.total_evacuated / m.total_demand if m.total_demand > 0 else 0
-    m.unserved = m.total_demand - m.total_evacuated
     m.avg_bus_time_s = bus_time_s
     m.avg_rail_time_s = rail_time_s
 
@@ -84,6 +92,8 @@ def metrics_to_dict(m: EvacuationMetrics) -> dict:
         "avg_walk_time_s": round(m.avg_walk_time_s, 1),
         "bus_utilization": round(m.bus_utilization, 3),
         "rail_share": round(m.rail_share, 3),
+        "bus_direct_share": round(m.bus_direct_share, 3),
+        "walk_direct_share": round(m.walk_direct_share, 3),
         "max_station_pressure": round(m.max_station_pressure, 3),
         "overloaded_stations": m.overloaded_stations,
     }

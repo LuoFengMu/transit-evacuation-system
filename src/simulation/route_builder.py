@@ -142,7 +142,7 @@ def dispatch_to_sumo_trips(
         f'length="12.0" maxSpeed="13.89" guiShape="bus"/>'
     )
 
-    for vid, route in dispatch_result.vehicle_routes.items():
+    for vehicle_index, (vid, route) in enumerate(dispatch_result.vehicle_routes.items()):
         seq_pts = []
         for stop_type, stop_id, _ in route:
             if stop_type == "depot":
@@ -159,7 +159,7 @@ def dispatch_to_sumo_trips(
         if len(seq_pts) < 2:
             continue
 
-        vehicle_depart = float(hash(vid) % 60)
+        vehicle_depart = float(vehicle_index % 60)
         for round_num in range(max_rounds):
             for k in range(len(seq_pts) - 1):
                 from_lon, from_lat = seq_pts[k]

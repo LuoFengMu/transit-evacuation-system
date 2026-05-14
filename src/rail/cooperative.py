@@ -25,6 +25,8 @@ class AllocationResult:
     bus_periphery_count: int = 0
     walk_self_count: int = 0
     unassigned: list = field(default_factory=list)
+    unassigned_people: int = 0
+    mode_people: dict = field(default_factory=dict)
     station_pressures: list = field(default_factory=list)
     round_results: list = field(default_factory=list)
 
@@ -42,11 +44,17 @@ def allocate_cooperative(
     bus_capacity_per_round: int = 1500,
     max_rounds: int = 3,
     reachable_rail: Optional[set] = None,
+    capacity_factor: float = 1.0,          # sensitivity: 0.7 conservative, 1.0 baseline, 1.2 optimistic
 ) -> AllocationResult:
-    """Multi-round crowd evacuation: rail is the primary organized channel."""
+    """Multi-round crowd evacuation: rail is the primary organized channel.
+
+    Args:
+        capacity_factor: Multiplier for rail station dynamic capacity.
+            0.7 = conservative, 1.0 = baseline, 1.2 = optimistic.
+    """
     result = AllocationResult()
 
-    station_caps = {s.station_id: max(1, int(s.dynamic_capacity_pax_h * rail_time_window_h))
+    station_caps = {s.station_id: max(1, int(s.dynamic_capacity_pax_h * capacity_factor * rail_time_window_h))
                     for s in rail_stations}
     rail_used = {s.station_id: 0 for s in rail_stations}
 
@@ -150,11 +158,19 @@ def allocate_cooperative(
             break
 
     result.unassigned = [dp["demand_id"] for dp in pending]
+    result.unassigned_people = sum(dp["people"] for dp in pending)
+    result.mode_people = {
+        "walk_self": sum(r.walk_self for r in result.round_results),
+        "walk_rail": sum(r.walk_rail for r in result.round_results),
+        "bus_rail": sum(r.rail_assigned for r in result.round_results),
+        "bus_periphery": sum(r.bus_periphery for r in result.round_results),
+    }
     result.rail_allocations = rail_used
     result.bus_periphery_count = sum(1 for v in result.destination_type.values() if v == "bus_periphery")
     result.walk_self_count = sum(1 for v in result.destination_type.values() if v == "walk_self")
     result.station_pressures = compute_pressure(
         rail_stations, rail_used, time_window_h=rail_time_window_h,
+        capacity_factor=capacity_factor,
     )
 
     return result

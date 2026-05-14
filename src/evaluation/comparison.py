@@ -1,4 +1,4 @@
-"""Three-scenario comparison for v0.4.0."""
+"""Three-scenario comparison for v0.4.1."""
 from dataclasses import dataclass, field
 import pandas as pd
 import plotly.graph_objects as go

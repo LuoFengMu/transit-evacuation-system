@@ -1,4 +1,4 @@
-"""Rail station capacity model for v0.4.0.
+"""Rail station capacity model for v0.4.1.
 
 Models:
   K_s = K_hall + K_platform        (static capacity, people)
@@ -79,10 +79,11 @@ def compute_pressure(
     allocations: dict[str, int],  # station_id → people allocated
     time_window_h: float = 1.0,
     background_flow: Optional[dict[str, int]] = None,
+    capacity_factor: float = 1.0,
 ) -> list[StationPressure]:
     """Compute pressure for each station given allocation.
 
-    P_s = (A_s + B_s) / (Q_s × Δt)
+    P_s = (A_s + B_s) / (Q_s × capacity_factor × Δt)
 
     Pressure levels:
       ≤ 0.8  → normal
@@ -95,7 +96,7 @@ def compute_pressure(
         arrivals = allocations.get(s.station_id, 0)
         if background_flow:
             arrivals += background_flow.get(s.station_id, 0)
-        capacity_used = int(s.dynamic_capacity_pax_h * time_window_h)
+        capacity_used = int(s.dynamic_capacity_pax_h * capacity_factor * time_window_h)
         if capacity_used > 0:
             pressure = arrivals / capacity_used
         else:

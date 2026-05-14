@@ -1,4 +1,4 @@
-# v0.4.0 方案 B: 轨道优先
+# v0.4.1 方案 B: 轨道优先
 scenario_id: B_rail_priority
 scenario_name: "方案B: 轨道优先"
 description: "近距离步行进站, 其余公交接驳轨道站"
@@ -10,11 +10,17 @@ walk_enabled: true
 
 event:
   type: "crowd"
+  location: "彭城广场"
   center: [117.205, 34.268]
   radius_m: 1500
 
 demand:
   file: "data/processed/demand_points_v0.1.geojson"
+  scale: 30000
+  random_variation: false
+  variation_ratio: 0.15
+  snap_to_road: true
+  filter_water: false
 
 bus:
   num_buses: 30
@@ -24,6 +30,16 @@ rail:
   stations_file: "data/processed/rail_stations_v0.4.geojson"
   lines_file: "data/processed/rail_lines_v0.4.csv"
   time_window_h: 1.0
+  walk_self_min: 20
+  walk_rail_min: 10
+  pressure_limit: 0.8
+  walk_mode: "euclidean_fast"
+  capacity_factor: 1.0
+
+sumo:
+  enabled: true
+  crop_network: true
+  traci_closure: false
 
 cooperative:
   max_walk_s: 1800
@@ -36,3 +52,5 @@ cooperative:
 simulation:
   engine: "sumo"
   duration_s: 7200
+  random_seed: 42
+  cost_matrix_mode: "euclidean_fast"
